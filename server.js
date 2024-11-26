@@ -4,7 +4,7 @@ const express = require('express');
 const multer = require('multer');
 const Ajv = require('ajv');
 const harSchema = require('har-schema');
-const { Configuration, OpenAIApi } = require('openai');
+const OpenAI = require('openai');
 const cors = require('cors');
 const { Worker, Queue } = require('bullmq');
 const Redis = require('ioredis');
@@ -34,10 +34,9 @@ pool.connect((err) => {
 });
 
 // Set up OpenAI Configuration
-const openaiConfig = new Configuration({
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
-const openai = new OpenAIApi(openaiConfig);
 
 // Initialize Queue
 const harQueue = new Queue('harQueue', { connection });
@@ -156,10 +155,10 @@ async function generateInsights(extractedData, persona) {
   ];
 
   // Call OpenAI Chat Completion API
-  const response = await openai.createChatCompletion({
+  const response = await openai.chat.completions.create({
     model: 'gpt-3.5-turbo',
     messages,
   });
 
-  return response.data.choices[0].message.content.trim();
+  return response.choices[0].message.content.trim();
 }
