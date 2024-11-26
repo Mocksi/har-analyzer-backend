@@ -16,7 +16,10 @@ app.use(cors());
 app.use(express.json());
 
 // Set up Redis Connection for BullMQ
-const connection = new Redis(process.env.REDIS_URL);
+const connection = new Redis(process.env.REDIS_URL, {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false
+});
 
 // Set up PostgreSQL Connection
 const pool = new Pool({
