@@ -1,4 +1,5 @@
 // server.js
+
 require('dotenv').config();
 const express = require('express');
 const multer = require('multer');
@@ -9,6 +10,7 @@ const cors = require('cors');
 const { Worker, Queue } = require('bullmq');
 const Redis = require('ioredis');
 const { Pool } = require('pg');
+const { v4: uuidv4 } = require('uuid');
 
 // Initialize Express App
 const app = express();
@@ -16,10 +18,7 @@ app.use(cors());
 app.use(express.json());
 
 // Set up Redis Connection for BullMQ
-const connection = new Redis(process.env.REDIS_URL, {
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false
-});
+const connection = new Redis(process.env.REDIS_URL);
 
 // Set up PostgreSQL Connection
 const pool = new Pool({
@@ -35,6 +34,24 @@ pool.connect((err) => {
     console.log('Database connected');
   }
 });
+
+// Initialize Database Tables
+pool.query(
+  `CREATE TABLE IF NOT EXISTS insights (
+    id SERIAL PRIMARY KEY,
+    job_id VARCHAR(255) UNIQUE NOT NULL,
+    persona VARCHAR(50) NOT NULL,
+    insights TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+  (err) => {
+    if (err) {
+      console.error('Error creating table', err.stack);
+    } else {
+      console.log('Table "insights" is ready');
+    }
+  }
+);
 
 // Set up OpenAI Configuration
 const openai = new OpenAI({
@@ -71,7 +88,9 @@ app.post('/upload', upload.single('harfile'), async (req, res) => {
     const validate = ajv.compile(harSchema);
     const valid = validate(harContent);
     if (!valid) {
-      return res.status(400).json({ error: 'Invalid HAR file format', details: validate.errors });
+      return res
+        .status(400)
+        .json({ error: 'Invalid HAR file format', details: validate.errors });
     }
 
     // Add Job to Queue
@@ -92,8 +111,15 @@ app.get('/results/:jobId', async (req, res) => {
     const { jobId } = req.params;
     const job = await harQueue.getJob(jobId);
 
+    if (job === null) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
     if (job.finishedOn) {
-      const result = await pool.query('SELECT * FROM insights WHERE job_id = $1', [jobId]);
+      const result = await pool.query(
+        'SELECT * FROM insights WHERE job_id = $1',
+        [jobId]
+      );
       res.json(result.rows[0]);
     } else {
       res.json({ status: 'Processing' });
@@ -116,6 +142,8 @@ const harWorker = new Worker(
   async (job) => {
     const { harContent, persona } = job.data;
 
+    console.log(`Processing job ${job.id}`);
+
     // Extract Relevant Data
     const extractedData = extractData(harContent);
 
@@ -127,6 +155,8 @@ const harWorker = new Worker(
       'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3)',
       [job.id, persona, insights]
     );
+
+    console.log(`Job ${job.id} completed`);
   },
   { connection }
 );
