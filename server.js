@@ -17,8 +17,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Define Redis connection options
+const redisOptions = {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false
+};
+
 // Set up Redis Connection for BullMQ
-const connection = new Redis(process.env.REDIS_URL);
+const connection = new Redis(process.env.REDIS_URL, redisOptions);
 
 // Set up PostgreSQL Connection
 const pool = new Pool({
@@ -59,7 +65,10 @@ const openai = new OpenAI({
 });
 
 // Initialize Queue
-const harQueue = new Queue('harQueue', { connection });
+const harQueue = new Queue('harQueue', { 
+  connection: redisOptions,
+  connection: new Redis(process.env.REDIS_URL, redisOptions)
+});
 
 // Set up Storage for Multer
 const storage = multer.memoryStorage();
@@ -158,7 +167,9 @@ const harWorker = new Worker(
 
     console.log(`Job ${job.id} completed`);
   },
-  { connection }
+  { 
+    connection: new Redis(process.env.REDIS_URL, redisOptions)
+  }
 );
 
 // Functions
