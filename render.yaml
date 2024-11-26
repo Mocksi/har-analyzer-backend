@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: har-analyzer-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_VERSION
+        value: 18.x
+      - key: CORS_ORIGINS
+        value: https://har-analyzer-frontend.onrender.com
