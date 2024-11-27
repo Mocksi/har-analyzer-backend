@@ -19,6 +19,23 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+// Add Redis configuration options
+const redisOptions = {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+  retryStrategy: (times) => {
+    const delay = Math.min(times * 50, 2000);
+    return delay;
+  },
+  reconnectOnError: (err) => {
+    const targetError = 'READONLY';
+    if (err.message.includes(targetError)) {
+      return true;
+    }
+    return false;
+  }
+};
+
 // Initialize Express App
 const app = express();
 const corsOrigins = process.env.CORS_ORIGINS?.split(',') || [
