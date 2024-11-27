@@ -12,7 +12,6 @@ const Redis = require('ioredis');
 const { Pool } = require('pg');
 const { v4: uuidv4 } = require('uuid');
 const analyzeHAR = require('./utils/harAnalyzer');
-const { cleanupExpiredInsights } = require('./utils/cleanup');
 
 // Initialize Express App
 const app = express();
@@ -211,57 +210,70 @@ app.listen(PORT, () => {
   console.log(`Backend server running on port ${PORT}`);
 });
 
-// Worker to Process HAR Files
-const worker = new Worker('harQueue', async job => {
-  try {
-    const metrics = analyzeHAR(job.data.harContent);
-    
-    // Ensure metrics has all required properties
-    const structuredMetrics = {
-      ...metrics,
-      selected: metrics.selected || {},
-      primary: metrics.primary || {},
-      timeseries: metrics.timeseries || [],
-      requestsByType: metrics.requestsByType || {},
-      statusCodes: metrics.statusCodes || {},
-      domains: metrics.domains || []
-    };
-
-    let insights = null;
-    let error = null;
-
+// Functions (move these before the worker setup)
+async function generateInsights(extractedData, persona) {
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const maxRetries = 3;
+  
+  for (let i = 0; i < maxRetries; i++) {
     try {
-      insights = await generateInsights(structuredMetrics, job.data.persona);
-    } catch (aiError) {
-      console.error('AI Insights generation failed:', aiError);
-      error = aiError.message;
+      const personaPrompts = {
+        Developer: `Analyze this HAR file data from a developer's perspective:
+        - Highlight performance bottlenecks and optimization opportunities
+        - Identify problematic API calls or slow requests
+        - Suggest specific code-level improvements
+        - Point out any security concerns or best practices violations`,
+        
+        'QA Professional': `Review this HAR file data from a QA perspective:
+        - Identify potential testing gaps and error patterns
+        - Analyze HTTP status code distribution
+        - Highlight reliability concerns
+        - Suggest test scenarios based on the traffic patterns`,
+        
+        'Sales Engineer': `Evaluate this HAR file data from a business perspective:
+        - Translate technical metrics into business impact
+        - Identify opportunities for improving user experience
+        - Compare performance against industry standards
+        - Highlight competitive advantages and areas for improvement`
+      };
+
+      const messages = [
+        {
+          role: 'system',
+          content: `You are an expert ${persona} analyzing web application performance data.`
+        },
+        {
+          role: 'user',
+          content: `${personaPrompts[persona]}\n\nData:\n${JSON.stringify(extractedData, null, 2)}`
+        }
+      ];
+
+      const response = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo-0125',
+        messages,
+        temperature: 0.7,
+        max_tokens: 1000
+      });
+
+      return response.choices[0].message.content.trim();
+    } catch (error) {
+      console.error(`OpenAI API attempt ${i + 1} failed:`, error.message);
+      
+      if (i < maxRetries - 1) {
+        // Wait longer between each retry
+        await delay((i + 1) * 2000); // 2s, 4s, 6s
+        continue;
+      }
+      
+      // On final attempt, throw the error
+      if (error.code === 'insufficient_quota') {
+        throw new Error('OpenAI API quota exceeded. Please try again later.');
+      }
+      throw error;
     }
-
-    await pool.query(
-      'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3)',
-      [job.id, job.data.persona, JSON.stringify({ 
-        metrics: structuredMetrics, 
-        insights,
-        error 
-      })]
-    );
-    
-    return { jobId: job.id };
-  } catch (error) {
-    console.error('Analysis failed:', error);
-    throw error;
   }
-});
+}
 
-worker.on('failed', (job, err) => {
-  console.error(`Job ${job.id} failed:`, err);
-});
-
-worker.on('completed', (job) => {
-  console.log(`Job ${job.id} completed`);
-});
-
-// Functions
 function extractData(harContent) {
   const entries = harContent.log.entries;
   
@@ -333,70 +345,6 @@ function extractData(harContent) {
   return metrics;
 }
 
-async function generateInsights(extractedData, persona) {
-  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-  const maxRetries = 3;
-  
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      const personaPrompts = {
-        Developer: `Analyze this HAR file data from a developer's perspective:
-        - Highlight performance bottlenecks and optimization opportunities
-        - Identify problematic API calls or slow requests
-        - Suggest specific code-level improvements
-        - Point out any security concerns or best practices violations`,
-        
-        'QA Professional': `Review this HAR file data from a QA perspective:
-        - Identify potential testing gaps and error patterns
-        - Analyze HTTP status code distribution
-        - Highlight reliability concerns
-        - Suggest test scenarios based on the traffic patterns`,
-        
-        'Sales Engineer': `Evaluate this HAR file data from a business perspective:
-        - Translate technical metrics into business impact
-        - Identify opportunities for improving user experience
-        - Compare performance against industry standards
-        - Highlight competitive advantages and areas for improvement`
-      };
-
-      const messages = [
-        {
-          role: 'system',
-          content: `You are an expert ${persona} analyzing web application performance data.`
-        },
-        {
-          role: 'user',
-          content: `${personaPrompts[persona]}\n\nData:\n${JSON.stringify(extractedData, null, 2)}`
-        }
-      ];
-
-      const response = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo-0125',
-        messages,
-        temperature: 0.7,
-        max_tokens: 1000
-      });
-
-      return response.choices[0].message.content.trim();
-    } catch (error) {
-      console.error(`OpenAI API attempt ${i + 1} failed:`, error.message);
-      
-      if (i < maxRetries - 1) {
-        // Wait longer between each retry
-        await delay((i + 1) * 2000); // 2s, 4s, 6s
-        continue;
-      }
-      
-      // On final attempt, throw the error
-      if (error.code === 'insufficient_quota') {
-        throw new Error('OpenAI API quota exceeded. Please try again later.');
-      }
-      throw error;
-    }
-  }
-}
-
-// Start cleanup process
 async function cleanupExpiredInsights() {
   try {
     const result = await pool.query(
@@ -407,6 +355,63 @@ async function cleanupExpiredInsights() {
     console.error('Cleanup failed:', error);
   }
 }
+
+// Worker setup (after the functions are defined)
+const worker = new Worker('harQueue', async job => {
+  try {
+    const metrics = analyzeHAR(job.data.harContent);
+    
+    // Ensure metrics has all required properties
+    const structuredMetrics = {
+      ...metrics,
+      selected: metrics.selected || {},
+      primary: metrics.primary || {},
+      timeseries: metrics.timeseries || [],
+      requestsByType: metrics.requestsByType || {},
+      statusCodes: metrics.statusCodes || {},
+      domains: metrics.domains || []
+    };
+
+    let insights = null;
+    let error = null;
+
+    try {
+      insights = await generateInsights(structuredMetrics, job.data.persona);
+    } catch (aiError) {
+      console.error('AI Insights generation failed:', aiError);
+      error = aiError.message;
+    }
+
+    await pool.query(
+      'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3)',
+      [job.id, job.data.persona, JSON.stringify({ 
+        metrics: structuredMetrics, 
+        insights,
+        error 
+      })]
+    );
+    
+    return { jobId: job.id };
+  } catch (error) {
+    console.error('Analysis failed:', error);
+    throw error;
+  }
+});
+
+worker.on('failed', (job, err) => {
+  console.error(`Job ${job.id} failed:`, err);
+});
+
+worker.on('completed', (job) => {
+  console.log(`Job ${job.id} completed`);
+});
+
+// Add cleanup scheduling
+// Run initial cleanup
+cleanupExpiredInsights();
+
+// Schedule cleanup every 24 hours
+setInterval(cleanupExpiredInsights, 24 * 60 * 60 * 1000);
 
 // Update Redis connection with error handling
 connection.on('error', (err) => {
