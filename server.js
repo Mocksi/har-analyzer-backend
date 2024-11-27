@@ -101,7 +101,6 @@ async function initializeServices() {
             console.log(`Analyzing HAR for job ${job.id}`);
             const metrics = analyzeHAR(job.data.harContent);
             
-            // Ensure required properties exist
             const sanitizedMetrics = {
               domains: metrics.domains || [],
               timeseries: metrics.timeseries || [],
@@ -135,44 +134,30 @@ async function initializeServices() {
             );
 
             console.log(`Job ${job.id} completed successfully`);
+            
+            // Mark job as completed with data
+            await job.updateProgress(100);
             return { metrics: sanitizedMetrics, insights };
+
           } catch (error) {
             console.error(`Job ${job.id} failed with error:`, error);
-            console.error('Error stack:', error.stack);
-            
-            // Store error state in database
-            try {
-              await pool.query(
-                'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
-                [
-                  job.id,
-                  job.data.persona,
-                  JSON.stringify({ error: 'Processing failed' }),
-                  JSON.stringify([{
-                    category: 'error',
-                    severity: 'error',
-                    message: 'Analysis failed',
-                    details: [error.message],
-                    recommendations: ['Try analyzing the file again'],
-                    timestamp: new Date().toISOString()
-                  }])
-                ]
-              );
-            } catch (dbError) {
-              console.error('Failed to store error state:', dbError);
-            }
-            
+            await job.updateProgress(0);
             throw error;
           }
-        }, { connection });
-
-        // Add error handler to worker
-        worker.on('error', error => {
-          console.error('Worker error:', error);
+        }, { 
+          connection,
+          concurrency: 1,
+          removeOnComplete: false, // Keep completed jobs for status checking
+          removeOnFail: false     // Keep failed jobs for debugging
         });
 
-        worker.on('failed', (job, error) => {
-          console.error(`Job ${job.id} failed:`, error);
+        // Add proper event handlers
+        worker.on('completed', job => {
+          console.log(`Job ${job.id} completed with result:`, job.returnvalue);
+        });
+
+        worker.on('failed', (job, err) => {
+          console.error(`Job ${job.id} failed with error:`, err);
         });
 
         resolve();
