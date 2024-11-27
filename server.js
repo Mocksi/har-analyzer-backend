@@ -33,8 +33,76 @@ const redisOptions = {
   enableReadyCheck: false
 };
 
-// Set up Redis Connection for BullMQ
+// Create Redis connection
 const connection = new Redis(process.env.REDIS_URL, redisOptions);
+
+// Wait for Redis connection before setting up Queue and Worker
+connection.on('error', (err) => {
+  console.error('Redis connection error:', err);
+});
+
+connection.on('connect', () => {
+  console.log('Redis connected');
+  
+  // Initialize Queue
+  const harQueue = new Queue('harQueue', { connection });
+
+  // Initialize Worker
+  const worker = new Worker(
+    'harQueue',
+    async job => {
+      try {
+        const metrics = analyzeHAR(job.data.harContent);
+        
+        const structuredMetrics = {
+          ...metrics,
+          selected: metrics.selected || {},
+          primary: metrics.primary || {},
+          timeseries: metrics.timeseries || [],
+          requestsByType: metrics.requestsByType || {},
+          statusCodes: metrics.statusCodes || {},
+          domains: metrics.domains || []
+        };
+
+        let insights = null;
+        let error = null;
+
+        try {
+          insights = await generateInsights(structuredMetrics, job.data.persona);
+        } catch (aiError) {
+          console.error('AI Insights generation failed:', aiError);
+          error = aiError.message;
+        }
+
+        await pool.query(
+          'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3)',
+          [job.id, job.data.persona, JSON.stringify({ 
+            metrics: structuredMetrics, 
+            insights,
+            error 
+          })]
+        );
+        
+        return { jobId: job.id };
+      } catch (error) {
+        console.error('Analysis failed:', error);
+        throw error;
+      }
+    },
+    { connection }
+  );
+
+  worker.on('failed', (job, err) => {
+    console.error(`Job ${job.id} failed:`, err);
+  });
+
+  worker.on('completed', (job) => {
+    console.log(`Job ${job.id} completed`);
+  });
+
+  // Make harQueue available to routes
+  app.locals.harQueue = harQueue;
+});
 
 // Set up PostgreSQL Connection
 const pool = new Pool({
@@ -78,9 +146,6 @@ const openai = new OpenAI({
 console.log('OpenAI API Key exists:', !!process.env.OPENAI_API_KEY);
 console.log('OpenAI API Key length:', process.env.OPENAI_API_KEY?.length);
 
-// Initialize Queue with the connection
-const harQueue = new Queue('harQueue', { connection });
-
 // Set up Storage for Multer
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
@@ -98,17 +163,14 @@ app.use((req, res, next) => {
 // API Endpoints
 app.post('/analyze', upload.single('harFile'), async (req, res) => {
   try {
-    // Debug logging
     console.log('Received file:', req.file ? 'yes' : 'no');
     console.log('File size:', req.file?.size);
     console.log('Persona:', req.body.persona);
 
-    // Validate File
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    // Parse HAR Content
     let harContent;
     try {
       harContent = JSON.parse(req.file.buffer.toString());
@@ -118,25 +180,18 @@ app.post('/analyze', upload.single('harFile'), async (req, res) => {
       return res.status(400).json({ error: 'Invalid JSON in HAR file' });
     }
 
-    // Validate Redis connection
-    if (!connection.status === 'ready') {
-      console.error('Redis not connected');
-      return res.status(500).json({ error: 'Queue service unavailable' });
+    if (!app.locals.harQueue) {
+      console.error('Queue not initialized');
+      return res.status(500).json({ error: 'Service not ready' });
     }
 
-    // Add Job to Queue
-    try {
-      const job = await harQueue.add('processHar', {
-        harContent,
-        persona: req.body.persona || 'developer',
-      });
-      console.log('Job added to queue:', job.id);
-      res.json({ jobId: job.id });
-    } catch (queueError) {
-      console.error('Queue error:', queueError);
-      res.status(500).json({ error: 'Failed to queue analysis job' });
-    }
-
+    const job = await app.locals.harQueue.add('processHar', {
+      harContent,
+      persona: req.body.persona || 'developer',
+    });
+    
+    console.log('Job added to queue:', job.id);
+    res.json({ jobId: job.id });
   } catch (error) {
     console.error('Endpoint error:', error);
     res.status(500).json({ 
@@ -354,67 +409,9 @@ async function cleanupExpiredInsights() {
   }
 }
 
-// Worker setup (after the functions are defined)
-const worker = new Worker('harQueue', async job => {
-  try {
-    const metrics = analyzeHAR(job.data.harContent);
-    
-    // Ensure metrics has all required properties
-    const structuredMetrics = {
-      ...metrics,
-      selected: metrics.selected || {},
-      primary: metrics.primary || {},
-      timeseries: metrics.timeseries || [],
-      requestsByType: metrics.requestsByType || {},
-      statusCodes: metrics.statusCodes || {},
-      domains: metrics.domains || []
-    };
-
-    let insights = null;
-    let error = null;
-
-    try {
-      insights = await generateInsights(structuredMetrics, job.data.persona);
-    } catch (aiError) {
-      console.error('AI Insights generation failed:', aiError);
-      error = aiError.message;
-    }
-
-    await pool.query(
-      'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3)',
-      [job.id, job.data.persona, JSON.stringify({ 
-        metrics: structuredMetrics, 
-        insights,
-        error 
-      })]
-    );
-    
-    return { jobId: job.id };
-  } catch (error) {
-    console.error('Analysis failed:', error);
-    throw error;
-  }
-});
-worker.on('failed', (job, err) => {
-  console.error(`Job ${job.id} failed:`, err);
-});
-
-worker.on('completed', (job) => {
-  console.log(`Job ${job.id} completed`);
-});
-
 // Add cleanup scheduling
 // Run initial cleanup
 cleanupExpiredInsights();
 
 // Schedule cleanup every 24 hours
 setInterval(cleanupExpiredInsights, 24 * 60 * 60 * 1000);
-
-// Update Redis connection with error handling
-connection.on('error', (err) => {
-  console.error('Redis connection error:', err);
-});
-
-connection.on('connect', () => {
-  console.log('Redis connected');
-});
