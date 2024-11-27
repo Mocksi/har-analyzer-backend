@@ -91,6 +91,13 @@ const upload = multer({ storage });
 // Initialize AJV for HAR validation
 const ajv = new Ajv();
 
+// Add this middleware for cache control
+app.use((req, res, next) => {
+  // Cache successful responses for 1 hour
+  res.set('Cache-Control', 'public, max-age=3600');
+  next();
+});
+
 // API Endpoints
 app.post('/analyze', upload.single('harFile'), async (req, res) => {
   try {
@@ -145,24 +152,37 @@ app.post('/analyze', upload.single('harFile'), async (req, res) => {
 app.get('/results/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
-    const job = await harQueue.getJob(jobId);
+    const { persona } = req.query;
 
-    if (job === null) {
-      return res.status(404).json({ error: 'Job not found' });
+    const result = await pool.query(
+      'SELECT insights FROM insights WHERE job_id = $1 AND persona = $2',
+      [jobId, persona]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'Results not found',
+        message: 'The requested analysis results are no longer available.'
+      });
     }
 
-    if (job.finishedOn) {
-      const result = await pool.query(
-        'SELECT * FROM insights WHERE job_id = $1',
-        [jobId]
-      );
-      res.json(result.rows[0]);
-    } else {
-      res.json({ status: 'Processing' });
-    }
+    const insights = result.rows[0].insights;
+    
+    // Add metadata to help with caching
+    const response = {
+      ...insights,
+      metadata: {
+        jobId,
+        persona,
+        timestamp: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      }
+    };
+
+    res.json(response);
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to retrieve results' });
+    console.error('Error fetching results:', error);
+    res.status(500).json({ error: 'Failed to fetch results' });
   }
 });
 
@@ -195,21 +215,32 @@ app.listen(PORT, () => {
 const worker = new Worker('harQueue', async job => {
   try {
     const metrics = analyzeHAR(job.data.harContent);
+    
+    // Ensure metrics has all required properties
+    const structuredMetrics = {
+      ...metrics,
+      selected: metrics.selected || {},
+      primary: metrics.primary || {},
+      timeseries: metrics.timeseries || [],
+      requestsByType: metrics.requestsByType || {},
+      statusCodes: metrics.statusCodes || {},
+      domains: metrics.domains || []
+    };
+
     let insights = null;
     let error = null;
 
     try {
-      insights = await generateInsights(metrics, job.data.persona);
+      insights = await generateInsights(structuredMetrics, job.data.persona);
     } catch (aiError) {
       console.error('AI Insights generation failed:', aiError);
       error = aiError.message;
     }
 
-    // Store results even if AI insights failed
     await pool.query(
       'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3)',
       [job.id, job.data.persona, JSON.stringify({ 
-        metrics, 
+        metrics: structuredMetrics, 
         insights,
         error 
       })]
@@ -220,8 +251,6 @@ const worker = new Worker('harQueue', async job => {
     console.error('Analysis failed:', error);
     throw error;
   }
-}, {
-  connection: new Redis(process.env.REDIS_URL, redisOptions)
 });
 
 worker.on('failed', (job, err) => {
@@ -368,7 +397,16 @@ async function generateInsights(extractedData, persona) {
 }
 
 // Start cleanup process
-cleanupExpiredInsights();
+async function cleanupExpiredInsights() {
+  try {
+    const result = await pool.query(
+      'DELETE FROM insights WHERE created_at < NOW() - INTERVAL \'7 days\' RETURNING id'
+    );
+    console.log(`Cleaned up ${result.rowCount} expired insights`);
+  } catch (error) {
+    console.error('Cleanup failed:', error);
+  }
+}
 
 // Update Redis connection with error handling
 connection.on('error', (err) => {
