@@ -98,32 +98,44 @@ async function initializeServices() {
         const worker = new Worker('harQueue', async job => {
           console.log(`Processing job ${job.id}...`);
           try {
-            // Add logging for each step
             console.log(`Analyzing HAR for job ${job.id}`);
             const metrics = analyzeHAR(job.data.harContent);
-            console.log(`Metrics generated for job ${job.id}:`, JSON.stringify(metrics).slice(0, 200) + '...');
+            
+            // Ensure required properties exist
+            const sanitizedMetrics = {
+              domains: metrics.domains || [],
+              timeseries: metrics.timeseries || [],
+              requestsByType: metrics.requestsByType || {},
+              primary: metrics.primary || {
+                errorRate: 0,
+                totalSize: 0,
+                totalRequests: 0,
+                avgResponseTime: 0
+              },
+              selected: metrics.selected || {
+                errorRequests: 0,
+                largestRequests: [],
+                slowestRequests: []
+              },
+              ...metrics
+            };
 
             console.log(`Generating insights for job ${job.id}`);
-            const rawInsights = await generateInsights(metrics, job.data.persona);
-            console.log(`Raw insights generated for job ${job.id}:`, rawInsights.slice(0, 200) + '...');
-
-            console.log(`Parsing insights for job ${job.id}`);
+            const rawInsights = await generateInsights(sanitizedMetrics, job.data.persona);
             const insights = parseAIResponse(rawInsights);
-            console.log(`Structured insights created for job ${job.id}`);
 
-            console.log(`Storing results for job ${job.id}`);
             await pool.query(
               'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
               [
                 job.id, 
                 job.data.persona, 
-                JSON.stringify(metrics), 
+                JSON.stringify(sanitizedMetrics), 
                 JSON.stringify(insights)
               ]
             );
 
             console.log(`Job ${job.id} completed successfully`);
-            return { metrics, insights };
+            return { metrics: sanitizedMetrics, insights };
           } catch (error) {
             console.error(`Job ${job.id} failed with error:`, error);
             console.error('Error stack:', error.stack);
