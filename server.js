@@ -13,7 +13,7 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
 
 // Restore the analyze endpoint
 app.post('/analyze', async (req, res) => {
@@ -54,6 +54,6 @@ function parseAIResponse(aiResponse) {
   }
 }
 
-app.listen(port, '0.0.0.0', () => {
+app.listen(port, () => {
   console.log(`HAR Analyzer backend listening on port ${port}`);
 });
