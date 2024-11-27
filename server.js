@@ -587,3 +587,44 @@ function determineSeverity(content) {
   
   return 'info';
 }
+
+const processHarFile = async (harContent) => {
+  // Process in chunks to avoid memory spikes
+  const entries = harContent.log.entries;
+  const processedEntries = [];
+  
+  // Process 100 entries at a time
+  const CHUNK_SIZE = 100;
+  for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+    const chunk = entries.slice(i, i + CHUNK_SIZE);
+    processedEntries.push(...await processEntryChunk(chunk));
+    // Allow GC to clean up between chunks
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+
+  // Clean up large objects when done
+  harContent = null;
+  entries = null;
+  global.gc(); // Only if running Node with --expose-gc
+  
+  return processedEntries;
+};
+
+const redisConfig = {
+  host: process.env.REDIS_HOST,
+  port: process.env.REDIS_PORT,
+  password: process.env.REDIS_PASSWORD,
+  maxRetriesPerRequest: 3,
+  maxMemoryPolicy: 'allkeys-lru', // Evict least recently used keys if memory is full
+  commandTimeout: 60000, // 60s timeout for long operations
+};
+
+const checkMemoryUsage = async (redis) => {
+  const info = await redis.info('memory');
+  const usedMemory = parseInt(info.match(/used_memory:(\d+)/)[1]);
+  const maxMemory = 256 * 1024 * 1024; // 256MB in bytes
+  
+  if (usedMemory > maxMemory * 0.8) { // 80% warning threshold
+    console.warn(`High memory usage: ${Math.round(usedMemory/1024/1024)}MB of ${maxMemory/1024/1024}MB`);
+  }
+};
