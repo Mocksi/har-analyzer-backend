@@ -214,27 +214,18 @@ app.get('/results/:jobId', async (req, res) => {
     if (result.rows.length === 0) {
       return res.status(404).json({ 
         error: 'Results not found',
-        message: 'The requested analysis results are no longer available.'
+        message: 'Analysis in progress or results have expired. Please try again in a few moments.'
       });
     }
 
     const insights = result.rows[0].insights;
-    
-    // Add metadata to help with caching
-    const response = {
-      ...insights,
-      metadata: {
-        jobId,
-        persona,
-        timestamp: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-      }
-    };
-
-    res.json(response);
+    res.json(insights);
   } catch (error) {
     console.error('Error fetching results:', error);
-    res.status(500).json({ error: 'Failed to fetch results' });
+    res.status(500).json({ 
+      error: 'Failed to fetch results',
+      message: error.message 
+    });
   }
 });
 
