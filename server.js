@@ -69,8 +69,8 @@ async function initializeServices() {
         id SERIAL PRIMARY KEY,
         job_id VARCHAR(255) NOT NULL,
         persona VARCHAR(50) NOT NULL,
-        metrics JSONB,
-        insights JSONB NOT NULL,
+        har_metrics JSONB,
+        har_insights JSONB NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(job_id, persona)
       )
@@ -102,7 +102,7 @@ async function initializeServices() {
             const initialInsights = await generateInsights(metrics, job.data.persona);
             
             await pool.query(
-              'INSERT INTO insights (job_id, persona, metrics, insights) VALUES ($1, $2, $3, $4)',
+              'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
               [job.id, job.data.persona, JSON.stringify(metrics), JSON.stringify(initialInsights)]
             );
 
@@ -159,14 +159,14 @@ app.get('/results/:jobId', async (req, res) => {
 
     // Get results for the specific persona
     const result = await pool.query(
-      'SELECT metrics, insights FROM insights WHERE job_id = $1 AND persona = $2',
+      'SELECT har_metrics, har_insights FROM insights WHERE job_id = $1 AND persona = $2',
       [jobId, persona]
     );
 
     if (result.rows.length === 0) {
       // Get metrics from original analysis
       const baseResult = await pool.query(
-        'SELECT metrics FROM insights WHERE job_id = $1 LIMIT 1',
+        'SELECT har_metrics FROM insights WHERE job_id = $1 LIMIT 1',
         [jobId]
       );
       
@@ -175,12 +175,12 @@ app.get('/results/:jobId', async (req, res) => {
       }
 
       // Generate new insights for this persona
-      const metrics = JSON.parse(baseResult.rows[0].metrics);
+      const metrics = JSON.parse(baseResult.rows[0].har_metrics);
       const newInsights = await generateInsights(metrics, persona);
 
       // Store new persona-specific insights
       await pool.query(
-        'INSERT INTO insights (job_id, persona, metrics, insights) VALUES ($1, $2, $3, $4)',
+        'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
         [jobId, persona, JSON.stringify(metrics), JSON.stringify(newInsights)]
       );
 
@@ -189,8 +189,8 @@ app.get('/results/:jobId', async (req, res) => {
 
     // Return existing results
     return res.json({
-      metrics: JSON.parse(result.rows[0].metrics),
-      insights: JSON.parse(result.rows[0].insights)
+      metrics: JSON.parse(result.rows[0].har_metrics),
+      insights: JSON.parse(result.rows[0].har_insights)
     });
 
   } catch (error) {
