@@ -31,6 +31,22 @@ app.post('/analyze', async (req, res) => {
   }
 });
 
+// Add results endpoint
+app.get('/results/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { persona } = req.query;
+    
+    // Since we're not using a queue anymore, just return the error
+    res.status(404).json({ 
+      error: 'Results not found. Please try uploading the file again.' 
+    });
+  } catch (error) {
+    console.error('Error fetching results:', error);
+    res.status(500).json({ error: 'Failed to fetch results' });
+  }
+});
+
 function parseAIResponse(aiResponse) {
   try {
     const sections = typeof aiResponse === 'string' 
