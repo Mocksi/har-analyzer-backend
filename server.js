@@ -102,8 +102,17 @@ async function initializeServices() {
             console.log(`Analyzing HAR for job ${job.id}`);
             const metrics = analyzeHAR(job.data.harContent);
             
+            // Convert Set to Array before sanitizing
+            if (metrics.domains instanceof Set) {
+              metrics.domains = Array.from(metrics.domains);
+            }
+
             const sanitizedMetrics = {
-              domains: metrics.domains || [],
+              domains: Array.isArray(metrics.domains) 
+                ? metrics.domains 
+                : (metrics.domains instanceof Set 
+                  ? Array.from(metrics.domains) 
+                  : []),
               timeseries: metrics.timeseries?.map(point => ({
                 timestamp: point.timestamp,
                 value: point.responseTime || 0

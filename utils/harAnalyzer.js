@@ -26,7 +26,7 @@ function analyzeHAR(harContent) {
     // Request categorization
     requestsByType: {},
     statusCodes: {},
-    domains: [],
+    domains: new Set(),
 
     // HTTP specific metrics
     httpMetrics: {
