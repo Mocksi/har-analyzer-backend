@@ -425,7 +425,7 @@ Please provide business-focused insights and ROI-driven recommendations.`
 
       return response.choices[0].message.content.trim();
     } catch (error) {
-      console.error(`OpenAI API attempt ${i + 1} failed:`, error.message);
+      console.error(`OpenAI API attempt ${i + 1} failed:`, error);
       
       if (i < maxRetries - 1) {
         await delay((i + 1) * 2000);
