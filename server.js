@@ -80,7 +80,7 @@ const upload = multer({ storage });
 const ajv = new Ajv();
 
 // API Endpoints
-app.post('/upload', upload.single('harfile'), async (req, res) => {
+app.post('/analyze', upload.single('harFile'), async (req, res) => {
   try {
     // Validate File
     if (!req.file) {
