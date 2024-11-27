@@ -105,7 +105,7 @@ async function initializeServices() {
               domains: metrics.domains || [],
               timeseries: metrics.timeseries?.map(point => ({
                 timestamp: point.timestamp,
-                responseTime: point.responseTime || 0
+                value: point.responseTime || 0
               })) || [],
               requestsByType: metrics.requestsByType || {},
               primary: metrics.primary || {
@@ -363,7 +363,7 @@ async function generateInsights(extractedData, persona) {
   • Identify potential vulnerabilities
 
 - Technical recommendations:
-  • Specific code-level improvements
+  �� Specific code-level improvements
   • Caching strategy optimizations
   • Performance enhancement priorities
 
