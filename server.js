@@ -41,7 +41,7 @@ connection.on('error', (err) => {
   console.error('Redis connection error:', err);
 });
 
-connection.on('connect', () => {
+connection.on('connect', async () => {
   console.log('Redis connected');
   
   // Initialize Queue
@@ -51,6 +51,7 @@ connection.on('connect', () => {
   const worker = new Worker(
     'harQueue',
     async job => {
+      console.log(`Processing job ${job.id}...`);
       try {
         const metrics = analyzeHAR(job.data.harContent);
         
@@ -74,8 +75,11 @@ connection.on('connect', () => {
           error = aiError.message;
         }
 
+        // Log before database insertion
+        console.log(`Inserting results for job ${job.id}...`);
+        
         await pool.query(
-          'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3)',
+          'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3) ON CONFLICT (job_id) DO UPDATE SET insights = $3',
           [job.id, job.data.persona, JSON.stringify({ 
             metrics: structuredMetrics, 
             insights,
@@ -83,21 +87,22 @@ connection.on('connect', () => {
           })]
         );
         
+        console.log(`Job ${job.id} completed successfully`);
         return { jobId: job.id };
       } catch (error) {
-        console.error('Analysis failed:', error);
+        console.error(`Job ${job.id} failed:`, error);
         throw error;
       }
     },
     { connection }
   );
 
-  worker.on('failed', (job, err) => {
-    console.error(`Job ${job.id} failed:`, err);
+  worker.on('completed', job => {
+    console.log(`Job ${job.id} completed`);
   });
 
-  worker.on('completed', (job) => {
-    console.log(`Job ${job.id} completed`);
+  worker.on('failed', (job, err) => {
+    console.error(`Job ${job.id} failed:`, err);
   });
 
   // Make harQueue available to routes
@@ -206,18 +211,22 @@ app.get('/results/:jobId', async (req, res) => {
     const { jobId } = req.params;
     const { persona } = req.query;
 
+    console.log(`Fetching results for job ${jobId} with persona ${persona}`);
+
     const result = await pool.query(
       'SELECT insights FROM insights WHERE job_id = $1 AND persona = $2',
       [jobId, persona]
     );
 
     if (result.rows.length === 0) {
+      console.log(`No results found for job ${jobId}`);
       return res.status(404).json({ 
         error: 'Results not found',
         message: 'Analysis in progress or results have expired. Please try again in a few moments.'
       });
     }
 
+    console.log(`Found results for job ${jobId}`);
     const insights = result.rows[0].insights;
     res.json(insights);
   } catch (error) {
