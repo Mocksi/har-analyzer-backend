@@ -85,11 +85,12 @@ async function initializeServices() {
         reject(err);
       });
 
-      connection.on('connect', () => {
+      connection.once('connect', () => {
         console.log('Redis connected');
         
-        // Initialize Queue
-        const harQueue = new Queue('harQueue', { connection });
+        // Initialize Queue and store in app.locals immediately
+        app.locals.harQueue = new Queue('harQueue', { connection });
+        console.log('Queue initialized and stored in app.locals');
         
         // Initialize Worker
         const worker = new Worker('harQueue', async job => {
@@ -147,8 +148,6 @@ async function initializeServices() {
           console.error(`Job ${job.id} failed:`, err);
         });
 
-        // Make queue available to routes
-        app.locals.harQueue = harQueue;
         resolve();
       });
     });
@@ -174,7 +173,15 @@ app.get('/results/:jobId', async (req, res) => {
     console.log(`Fetching results for job ${jobId} with persona ${persona}`);
 
     // First, check if the job is still in progress
-    const jobStatus = await harQueue.getJob(jobId);
+    if (!app.locals.harQueue) {
+      console.error('Queue not initialized');
+      return res.status(500).json({ 
+        error: 'Service not ready',
+        message: 'Queue not initialized'
+      });
+    }
+
+    const jobStatus = await app.locals.harQueue.getJob(jobId);
     if (jobStatus && !jobStatus.finishedOn) {
       console.log(`Job ${jobId} is still processing`);
       return res.status(202).json({ 
@@ -204,7 +211,8 @@ app.get('/results/:jobId', async (req, res) => {
     console.error('Error fetching results:', error);
     res.status(500).json({ 
       error: 'Failed to fetch results',
-      message: error.message 
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
