@@ -107,17 +107,18 @@ async function initializeServices() {
               domains: metrics.domains || []
             };
 
-            let insights = null;
+            let insights = [];
             let error = null;
 
             try {
-              insights = await generateInsights(structuredMetrics, job.data.persona);
+              const aiResponse = await generateInsights(structuredMetrics, job.data.persona);
+              // Parse AI response into structured insights
+              insights = parseAIResponse(aiResponse);
             } catch (aiError) {
               console.error('AI Insights generation failed:', aiError);
               error = aiError.message;
             }
 
-            // Log before database insertion
             console.log(`Inserting results for job ${job.id}...`);
             
             await pool.query(
@@ -127,7 +128,7 @@ async function initializeServices() {
                DO UPDATE SET insights = $3, persona = $2`,
               [job.id, job.data.persona, JSON.stringify({ 
                 metrics: structuredMetrics, 
-                insights,
+                insights: insights || [], // Ensure insights is always an array
                 error 
               })]
             );
@@ -458,3 +459,27 @@ cleanupExpiredInsights();
 
 // Schedule cleanup every 24 hours
 setInterval(cleanupExpiredInsights, 24 * 60 * 60 * 1000);
+
+// Helper function to parse AI response into structured insights
+function parseAIResponse(aiResponse) {
+  try {
+    // If the response is already an array of insights, return it
+    if (Array.isArray(aiResponse)) {
+      return aiResponse;
+    }
+    
+    // Otherwise, create a single insight
+    return [{
+      severity: 'info',
+      message: aiResponse,
+      timestamp: new Date().toISOString()
+    }];
+  } catch (error) {
+    console.error('Failed to parse AI response:', error);
+    return [{
+      severity: 'error',
+      message: 'Failed to parse AI insights',
+      timestamp: new Date().toISOString()
+    }];
+  }
+}
