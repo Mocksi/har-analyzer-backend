@@ -221,15 +221,15 @@ app.get('/results/:jobId', async (req, res) => {
       insights = JSON.parse(insights);
     }
 
-    // Transform timeseries data to match frontend expectations
-    metrics.timeseries = Array.isArray(metrics.timeseries) 
-      ? metrics.timeseries.map(point => ({
-          timestamp: point.timestamp,
-          value: point.responseTime || 0  // Change responseTime to value
-        }))
-      : [];
-
     console.log('Sending metrics with timeseries:', metrics.timeseries); // Debug log
+
+    // Log the full metrics structure for debugging
+    console.log('Full metrics structure:', {
+      timeseriesLength: metrics.timeseries?.length,
+      timeseriesExample: metrics.timeseries?.[0],
+      hasWebSocket: !!metrics.websocketMetrics,
+      totalRequests: metrics.totalRequests
+    });
 
     return res.json({ metrics, insights });
 
@@ -363,7 +363,7 @@ async function generateInsights(extractedData, persona) {
   • Identify potential vulnerabilities
 
 - Technical recommendations:
-  �� Specific code-level improvements
+   Specific code-level improvements
   • Caching strategy optimizations
   • Performance enhancement priorities
 
