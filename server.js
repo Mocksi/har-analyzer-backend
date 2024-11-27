@@ -16,7 +16,16 @@ const { cleanupExpiredInsights } = require('./utils/cleanup');
 
 // Initialize Express App
 const app = express();
-app.use(cors());
+const corsOrigins = process.env.CORS_ORIGINS?.split(',') || [
+  'https://har-analyzer-frontend.onrender.com',
+  'http://localhost:3000'
+];
+
+app.use(cors({
+  origin: corsOrigins,
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type']
+}));
 app.use(express.json());
 
 // Define Redis connection options
