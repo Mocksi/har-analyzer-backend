@@ -91,6 +91,11 @@ const ajv = new Ajv();
 // API Endpoints
 app.post('/analyze', upload.single('harFile'), async (req, res) => {
   try {
+    // Debug logging
+    console.log('Received file:', req.file ? 'yes' : 'no');
+    console.log('File size:', req.file?.size);
+    console.log('Persona:', req.body.persona);
+
     // Validate File
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -100,29 +105,37 @@ app.post('/analyze', upload.single('harFile'), async (req, res) => {
     let harContent;
     try {
       harContent = JSON.parse(req.file.buffer.toString());
+      console.log('Successfully parsed HAR content');
     } catch (parseError) {
+      console.error('Parse error:', parseError);
       return res.status(400).json({ error: 'Invalid JSON in HAR file' });
     }
 
-    // Validate HAR File
-    const validate = ajv.compile(harSchema);
-    const valid = validate(harContent);
-    if (!valid) {
-      return res
-        .status(400)
-        .json({ error: 'Invalid HAR file format', details: validate.errors });
+    // Validate Redis connection
+    if (!connection.status === 'ready') {
+      console.error('Redis not connected');
+      return res.status(500).json({ error: 'Queue service unavailable' });
     }
 
     // Add Job to Queue
-    const job = await harQueue.add('processHar', {
-      harContent,
-      persona: req.body.persona,
-    });
+    try {
+      const job = await harQueue.add('processHar', {
+        harContent,
+        persona: req.body.persona || 'developer',
+      });
+      console.log('Job added to queue:', job.id);
+      res.json({ jobId: job.id });
+    } catch (queueError) {
+      console.error('Queue error:', queueError);
+      res.status(500).json({ error: 'Failed to queue analysis job' });
+    }
 
-    res.json({ jobId: job.id });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Failed to process file' });
+    console.error('Endpoint error:', error);
+    res.status(500).json({ 
+      error: 'Failed to process file',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
@@ -313,3 +326,21 @@ async function generateInsights(extractedData, persona) {
 
 // Start cleanup process
 cleanupExpiredInsights();
+
+// Update Redis connection with error handling
+connection.on('error', (err) => {
+  console.error('Redis connection error:', err);
+});
+
+connection.on('connect', () => {
+  console.log('Redis connected');
+});
+
+// Update BullMQ worker with error handling
+harWorker.on('failed', (job, err) => {
+  console.error(`Job ${job.id} failed:`, err);
+});
+
+harWorker.on('completed', (job) => {
+  console.log(`Job ${job.id} completed`);
+});

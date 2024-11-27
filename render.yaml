@@ -8,5 +8,29 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 18.x
+      - key: NODE_ENV
+        value: production
       - key: CORS_ORIGINS
         value: https://har-analyzer-frontend.onrender.com
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: har-analyzer-redis
+          property: connectionString
+      - key: DATABASE_URL
+        fromService:
+          type: postgres
+          name: har-analyzer-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false  # This will be manually set in Render dashboard
+
+  - type: redis
+    name: har-analyzer-redis
+    ipAllowList: []  # Only allow internal connections
+    plan: free
+
+  - type: postgres
+    name: har-analyzer-db
+    ipAllowList: []  # Only allow internal connections
+    plan: free
