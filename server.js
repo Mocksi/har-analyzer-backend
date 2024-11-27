@@ -75,6 +75,10 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Add a debug log (temporary)
+console.log('OpenAI API Key exists:', !!process.env.OPENAI_API_KEY);
+console.log('OpenAI API Key length:', process.env.OPENAI_API_KEY?.length);
+
 // Initialize Queue
 const harQueue = new Queue('harQueue', { 
   connection: new Redis(process.env.REDIS_URL, redisOptions)
@@ -159,6 +163,25 @@ app.get('/results/:jobId', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to retrieve results' });
+  }
+});
+
+// Temporary test endpoint
+app.get('/test-openai', async (req, res) => {
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages: [{ role: 'user', content: 'Say hello' }],
+      max_tokens: 10
+    });
+    res.json({ success: true, response: response.choices[0].message });
+  } catch (error) {
+    res.json({ 
+      success: false, 
+      error: error.message,
+      code: error.code,
+      type: error.type
+    });
   }
 });
 
@@ -282,65 +305,65 @@ function extractData(harContent) {
 }
 
 async function generateInsights(extractedData, persona) {
-  try {
-    const personaPrompts = {
-      Developer: `Analyze this HAR file data from a developer's perspective:
-      - Highlight performance bottlenecks and optimization opportunities
-      - Identify problematic API calls or slow requests
-      - Suggest specific code-level improvements
-      - Point out any security concerns or best practices violations`,
-      
-      'QA Professional': `Review this HAR file data from a QA perspective:
-      - Identify potential testing gaps and error patterns
-      - Analyze HTTP status code distribution
-      - Highlight reliability concerns
-      - Suggest test scenarios based on the traffic patterns`,
-      
-      'Sales Engineer': `Evaluate this HAR file data from a business perspective:
-      - Translate technical metrics into business impact
-      - Identify opportunities for improving user experience
-      - Compare performance against industry standards
-      - Highlight competitive advantages and areas for improvement`
-    };
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const maxRetries = 3;
+  
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const personaPrompts = {
+        Developer: `Analyze this HAR file data from a developer's perspective:
+        - Highlight performance bottlenecks and optimization opportunities
+        - Identify problematic API calls or slow requests
+        - Suggest specific code-level improvements
+        - Point out any security concerns or best practices violations`,
+        
+        'QA Professional': `Review this HAR file data from a QA perspective:
+        - Identify potential testing gaps and error patterns
+        - Analyze HTTP status code distribution
+        - Highlight reliability concerns
+        - Suggest test scenarios based on the traffic patterns`,
+        
+        'Sales Engineer': `Evaluate this HAR file data from a business perspective:
+        - Translate technical metrics into business impact
+        - Identify opportunities for improving user experience
+        - Compare performance against industry standards
+        - Highlight competitive advantages and areas for improvement`
+      };
 
-    const messages = [
-      {
-        role: 'system',
-        content: `You are an expert ${persona} analyzing web application performance data.`
-      },
-      {
-        role: 'user',
-        content: `${personaPrompts[persona]}\n\nData:\n${JSON.stringify(extractedData, null, 2)}`
+      const messages = [
+        {
+          role: 'system',
+          content: `You are an expert ${persona} analyzing web application performance data.`
+        },
+        {
+          role: 'user',
+          content: `${personaPrompts[persona]}\n\nData:\n${JSON.stringify(extractedData, null, 2)}`
+        }
+      ];
+
+      const response = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo-0125',
+        messages,
+        temperature: 0.7,
+        max_tokens: 1000
+      });
+
+      return response.choices[0].message.content.trim();
+    } catch (error) {
+      console.error(`OpenAI API attempt ${i + 1} failed:`, error.message);
+      
+      if (i < maxRetries - 1) {
+        // Wait longer between each retry
+        await delay((i + 1) * 2000); // 2s, 4s, 6s
+        continue;
       }
-    ];
-
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages,
-      temperature: 0.7,
-      max_tokens: 1500
-    });
-
-    return response.choices[0].message.content.trim();
-  } catch (error) {
-    console.error('OpenAI API error:', error);
-    
-    // Check for specific OpenAI errors
-    if (error.code === 'insufficient_quota') {
-      throw new Error('OpenAI API quota exceeded. Please try again later.');
+      
+      // On final attempt, throw the error
+      if (error.code === 'insufficient_quota') {
+        throw new Error('OpenAI API quota exceeded. Please try again later.');
+      }
+      throw error;
     }
-    
-    if (error.status === 429) {
-      throw new Error('Rate limit exceeded. Please try again in a few minutes.');
-    }
-    
-    // Generic OpenAI error
-    if (error.response?.status >= 400) {
-      throw new Error('AI analysis temporarily unavailable. Basic metrics are still available.');
-    }
-
-    // Fallback error
-    throw new Error('Failed to generate AI insights. Basic metrics are still available.');
   }
 }
 
