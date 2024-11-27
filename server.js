@@ -221,6 +221,14 @@ app.get('/results/:jobId', async (req, res) => {
       insights = JSON.parse(insights);
     }
 
+    // Transform timeseries data to match frontend expectations
+    if (metrics.timeseries) {
+      metrics.timeseries = metrics.timeseries.map(point => ({
+        timestamp: point.timestamp,
+        value: point.responseTime || 0
+      }));
+    }
+
     console.log('Sending metrics with timeseries:', metrics.timeseries); // Debug log
 
     // Log the full metrics structure for debugging
