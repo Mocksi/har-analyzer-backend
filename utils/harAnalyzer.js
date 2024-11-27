@@ -62,6 +62,39 @@ function analyzeHAR(harContent) {
       }
     };
 
+    const insights = [];
+    
+    // Performance insights
+    insights.push({
+      category: 'Performance',
+      severity: calculateSeverity(metrics.primary.avgResponseTime, 300, 1000),
+      content: `Analysis of ${metrics.totalRequests} requests across ${Object.keys(metrics.domains).length} domains. Average response time: ${metrics.primary.avgResponseTime.toFixed(2)}ms.`,
+      details: generatePerformanceDetails(metrics),
+      recommendations: generatePerformanceRecommendations(metrics)
+    });
+
+    // Cache insights
+    const cacheRate = (metrics.httpMetrics.cacheHits / 
+      (metrics.httpMetrics.cacheHits + metrics.httpMetrics.cacheMisses)) * 100;
+    insights.push({
+      category: 'Cache',
+      severity: calculateSeverity(100 - cacheRate, 20, 40),
+      content: `Cache hit rate: ${cacheRate.toFixed(2)}%`,
+      details: generateCacheDetails(metrics),
+      recommendations: generateCacheRecommendations(metrics)
+    });
+
+    // Error insights
+    if (metrics.primary.errorRate > 0) {
+      insights.push({
+        category: 'Errors',
+        severity: calculateSeverity(metrics.primary.errorRate * 100, 1, 5),
+        content: `Error rate: ${(metrics.primary.errorRate * 100).toFixed(2)}%`,
+        details: generateErrorDetails(metrics),
+        recommendations: generateErrorRecommendations(metrics)
+      });
+    }
+
     // Process entries
     harContent.log.entries.forEach(entry => {
       try {
@@ -71,7 +104,10 @@ function analyzeHAR(harContent) {
       }
     });
 
-    return metrics;
+    return {
+      metrics,
+      insights  // Add insights to the return object
+    };
   } catch (error) {
     console.error('Error analyzing HAR:', error);
     throw error;
@@ -173,5 +209,31 @@ function calculateErrorRate(statusCodes) {
   const total = Object.values(statusCodes).reduce((sum, count) => sum + count, 0);
   return total > 0 ? errors / total : 0;
 }
+
+// Helper functions for insights generation
+function calculateSeverity(value, warningThreshold, errorThreshold) {
+  if (value >= errorThreshold) return 'error';
+  if (value >= warningThreshold) return 'warning';
+  return 'info';
+}
+
+function generatePerformanceDetails(metrics) {
+  const details = [];
+  if (metrics.httpMetrics.slowestRequests.length > 0) {
+    details.push(`Slowest request: ${metrics.httpMetrics.slowestRequests[0].url} (${metrics.httpMetrics.slowestRequests[0].time.toFixed(2)}ms)`);
+  }
+  return details;
+}
+
+function generatePerformanceRecommendations(metrics) {
+  const recommendations = [];
+  if (metrics.primary.avgResponseTime > 300) {
+    recommendations.push('Consider implementing caching strategies');
+    recommendations.push('Optimize server response times');
+  }
+  return recommendations;
+}
+
+// ... Add similar helper functions for cache and error insights ...
 
 module.exports = analyzeHAR; 

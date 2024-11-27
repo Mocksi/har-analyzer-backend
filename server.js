@@ -40,42 +40,30 @@ function formatDate(date) {
 }
 
 async function generateInsights(metrics) {
-  const insights = [];
-  
-  // Performance insights
-  insights.push({
-    category: 'Performance',
-    content: `Analysis of ${metrics.totalRequests} requests across ${metrics.domains.size} domains. Average response time: ${(metrics.totalTime / metrics.totalRequests).toFixed(2)}ms.`,
-    severity: 'info',
-    timestamp: new Date().toISOString()
-  });
-  
-  // Error rate insights
-  const errorRate = Object.entries(metrics.httpMetrics.statusCodes)
-    .filter(([code]) => code.startsWith('4') || code.startsWith('5'))
-    .reduce((sum, [_, count]) => sum + count, 0) / metrics.totalRequests;
-  
-  if (errorRate > 0) {
-    insights.push({
-      category: 'Errors',
-      content: `Error rate: ${(errorRate * 100).toFixed(2)}%. Found ${metrics.httpMetrics.slowestRequests.length} slow requests.`,
-      severity: errorRate > 0.1 ? 'error' : 'warning',
+  // Get base insights
+  const baseInsights = [
+    {
+      category: 'Performance',
+      content: `Analysis of ${metrics.totalRequests} requests across ${metrics.domains.size} domains. Average response time: ${(metrics.totalTime / metrics.totalRequests).toFixed(2)}ms.`,
+      severity: 'info',
       timestamp: new Date().toISOString()
-    });
+    },
+    // ... other base insights ...
+  ];
+
+  // Get AI-powered insights for each persona
+  const personas = ['Developer', 'QA Professional', 'Sales Engineer'];
+  const aiInsights = {};
+  
+  for (const persona of personas) {
+    const aiResponse = await generatePersonaInsights(metrics, persona);
+    aiInsights[persona.toLowerCase().replace(' ', '')] = parseAIResponse(aiResponse);
   }
-  
-  // Cache insights
-  const cacheRate = metrics.httpMetrics.cacheHits / 
-    (metrics.httpMetrics.cacheHits + metrics.httpMetrics.cacheMisses);
-  
-  insights.push({
-    category: 'Cache',
-    content: `Cache hit rate: ${(cacheRate * 100).toFixed(2)}%`,
-    severity: cacheRate < 0.5 ? 'warning' : 'info',
-    timestamp: new Date().toISOString()
-  });
-  
-  return insights;
+
+  return {
+    baseInsights,
+    personaInsights: aiInsights
+  };
 }
 
 // Restore the analyze endpoint
