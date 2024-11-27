@@ -99,15 +99,24 @@ async function initializeServices() {
           console.log(`Processing job ${job.id}...`);
           try {
             const metrics = analyzeHAR(job.data.harContent);
-            const initialInsights = await generateInsights(metrics, job.data.persona);
+            const rawInsights = await generateInsights(metrics, job.data.persona);
             
+            // Parse the insights into structured format
+            const insights = parseAIResponse(rawInsights);
+            
+            // Store both as JSONB
             await pool.query(
               'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
-              [job.id, job.data.persona, JSON.stringify(metrics), JSON.stringify(initialInsights)]
+              [
+                job.id, 
+                job.data.persona, 
+                JSON.stringify(metrics), 
+                JSON.stringify(insights)  // Make sure insights is an object/array before storing
+              ]
             );
 
             console.log(`Job ${job.id} completed successfully`);
-            return { metrics, insights: initialInsights };
+            return { metrics, insights };
           } catch (error) {
             console.error(`Job ${job.id} failed:`, error);
             throw error;
@@ -146,56 +155,37 @@ app.get('/results/:jobId', async (req, res) => {
 
     console.log(`Fetching results for job ${jobId} with persona ${persona}`);
 
-    // Check if job is still processing
-    if (!app.locals.harQueue) {
-      console.error('Queue not initialized');
-      return res.status(500).json({ error: 'Service not ready' });
-    }
-
-    const jobStatus = await app.locals.harQueue.getJob(jobId);
-    if (jobStatus && !jobStatus.finishedOn) {
-      return res.status(202).json({ status: 'processing' });
-    }
-
-    // Get results for the specific persona
     const result = await pool.query(
       'SELECT har_metrics, har_insights FROM insights WHERE job_id = $1 AND persona = $2',
       [jobId, persona]
     );
 
     if (result.rows.length === 0) {
-      // Get metrics from original analysis
-      const baseResult = await pool.query(
-        'SELECT har_metrics FROM insights WHERE job_id = $1 LIMIT 1',
-        [jobId]
-      );
-      
-      if (baseResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Results not found' });
-      }
-
-      // Generate new insights for this persona
-      const metrics = JSON.parse(baseResult.rows[0].har_metrics);
-      const newInsights = await generateInsights(metrics, persona);
-
-      // Store new persona-specific insights
-      await pool.query(
-        'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
-        [jobId, persona, JSON.stringify(metrics), JSON.stringify(newInsights)]
-      );
-
-      return res.json({ metrics, insights: newInsights });
+      return res.status(404).json({ error: 'Results not found' });
     }
 
-    // Return existing results
-    return res.json({
-      metrics: JSON.parse(result.rows[0].har_metrics),
-      insights: JSON.parse(result.rows[0].har_insights)
-    });
+    const metrics = result.rows[0].har_metrics;
+    let insights = result.rows[0].har_insights;
+
+    // Handle case where insights might be stored as a string
+    if (typeof insights === 'string') {
+      insights = parseAIResponse(insights);
+      
+      // Update the stored format
+      await pool.query(
+        'UPDATE insights SET har_insights = $1 WHERE job_id = $2 AND persona = $3',
+        [JSON.stringify(insights), jobId, persona]
+      );
+    }
+
+    return res.json({ metrics, insights });
 
   } catch (error) {
     console.error('Error fetching results:', error);
-    res.status(500).json({ error: 'Failed to fetch results' });
+    res.status(500).json({ 
+      error: 'Failed to fetch results',
+      details: error.message 
+    });
   }
 });
 
