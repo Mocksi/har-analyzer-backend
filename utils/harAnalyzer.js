@@ -1,106 +1,81 @@
 function analyzeHAR(harContent) {
-  const metrics = {
-    // General metrics
-    totalRequests: 0,
-    totalSize: 0,
-    totalTime: 0,
-    
-    // Primary metrics for overview
-    primary: {
+  try {
+    if (!harContent?.log?.entries) {
+      throw new Error('Invalid HAR format: missing log.entries');
+    }
+
+    const metrics = {
+      // General metrics
       totalRequests: 0,
-      avgResponseTime: 0,
-      totalSize: 0,
-      errorRate: 0
-    },
-
-    // Selected metrics for drilldown
-    selected: {
-      slowestRequests: [],
-      largestRequests: [],
-      errorRequests: []
-    },
-
-    // Time series data
-    timeseries: [],
-
-    // Request categorization
-    requestsByType: {},
-    statusCodes: {},
-    domains: new Set(),
-
-    // HTTP specific metrics
-    httpMetrics: {
-      requests: 0,
       totalSize: 0,
       totalTime: 0,
-      statusCodes: {},
+      
+      // Primary metrics for overview
+      primary: {
+        totalRequests: 0,
+        avgResponseTime: 0,
+        totalSize: 0,
+        errorRate: 0
+      },
+
+      // Selected metrics for drilldown
+      selected: {
+        slowestRequests: [],
+        largestRequests: [],
+        errorRequests: []
+      },
+
+      // Time series data
+      timeseries: [],
+
+      // Request categorization
       requestsByType: {},
-      slowestRequests: [],
-      largestRequests: [],
-      cacheHits: 0,
-      cacheMisses: 0,
-      securityIssues: []
-    },
-    
-    // WebSocket specific metrics
-    websocketMetrics: {
-      connections: 0,
-      messageCount: 0,
-      sentMessages: 0,
-      receivedMessages: 0,
-      totalMessageSize: 0,
-      averageMessageSize: 0,
-      connectionDuration: 0,
-      messageTypes: {},
-      protocols: new Set(),
-      errors: []
-    }
-  };
+      statusCodes: {},
+      domains: new Set(),
 
-  if (!harContent?.log?.entries) {
-    return metrics;
-  }
+      // HTTP specific metrics
+      httpMetrics: {
+        requests: 0,
+        totalSize: 0,
+        totalTime: 0,
+        statusCodes: {},
+        requestsByType: {},
+        slowestRequests: [],
+        largestRequests: [],
+        cacheHits: 0,
+        cacheMisses: 0,
+        securityIssues: []
+      },
+      
+      // WebSocket specific metrics
+      websocketMetrics: {
+        connections: 0,
+        messageCount: 0,
+        sentMessages: 0,
+        receivedMessages: 0,
+        totalMessageSize: 0,
+        averageMessageSize: 0,
+        connectionDuration: 0,
+        messageTypes: {},
+        protocols: new Set(),
+        errors: []
+      }
+    };
 
-  // Process entries and populate metrics
-  harContent.log.entries.forEach(entry => {
-    metrics.totalRequests++;
-    
-    if (entry._resourceType === 'websocket') {
-      processWebSocketEntry(entry, metrics);
-    } else {
-      processHTTPEntry(entry, metrics);
-    }
-
-    // Build timeseries data
-    const timestamp = new Date(entry.startedDateTime).getTime();
-    metrics.timeseries.push({
-      timestamp,
-      responseTime: entry.time,
-      size: calculateEntrySize(entry),
-      type: entry._resourceType || 'other'
+    // Process entries
+    harContent.log.entries.forEach(entry => {
+      try {
+        processEntry(entry, metrics);
+      } catch (err) {
+        console.error('Error processing entry:', err);
+      }
     });
-  });
 
-  // Calculate averages and populate primary metrics
-  metrics.primary = {
-    totalRequests: metrics.totalRequests,
-    avgResponseTime: metrics.totalTime / metrics.totalRequests || 0,
-    totalSize: metrics.totalSize,
-    errorRate: calculateErrorRate(metrics.httpMetrics.statusCodes)
-  };
-
-  // Sort and limit arrays
-  metrics.selected = {
-    slowestRequests: metrics.httpMetrics.slowestRequests.slice(0, 5),
-    largestRequests: metrics.httpMetrics.largestRequests.slice(0, 5),
-    errorRequests: metrics.httpMetrics.statusCodes['4xx'] || 0
-  };
-
-  // Convert Sets to arrays
-  metrics.domains = Array.from(metrics.domains);
-  metrics.websocketMetrics.protocols = Array.from(metrics.websocketMetrics.protocols);
-
-  return metrics;
+    return metrics;
+  } catch (error) {
+    console.error('Error analyzing HAR:', error);
+    throw error;
+  }
 }
 
 function processWebSocketEntry(entry, metrics) {
@@ -120,21 +95,43 @@ function processWebSocketEntry(entry, metrics) {
   metrics.websocketMetrics.connectionDuration += entry.time;
 }
 
+function processEntry(entry, metrics) {
+  // Update total metrics
+  metrics.totalRequests++;
+  metrics.totalSize += calculateEntrySize(entry);
+  metrics.totalTime += entry.time;
+  
+  // Track domain
+  const domain = new URL(entry.request.url).hostname;
+  metrics.domains.add(domain);
+  
+  // Process by entry type
+  if (entry._resourceType === 'websocket') {
+    processWebSocketEntry(entry, metrics);
+  } else {
+    processHTTPEntry(entry, metrics);
+  }
+  
+  // Add to timeseries
+  metrics.timeseries.push({
+    timestamp: new Date(entry.startedDateTime).getTime(),
+    value: entry.time
+  });
+}
+
 function processHTTPEntry(entry, metrics) {
   const size = calculateEntrySize(entry);
   const type = entry._resourceType || 'other';
   
-  metrics.totalSize += size;
-  metrics.totalTime += entry.time;
-  metrics.domains.add(new URL(entry.request.url).hostname);
+  // Update HTTP metrics
+  metrics.httpMetrics.requests++;
+  metrics.httpMetrics.totalSize += size;
+  metrics.httpMetrics.totalTime += entry.time;
   
-  // Update request type counts
-  metrics.requestsByType[type] = (metrics.requestsByType[type] || 0) + 1;
-  
-  // Update status code counts
-  const status = entry.response.status;
-  const statusCategory = `${Math.floor(status/100)}xx`;
-  metrics.statusCodes[statusCategory] = (metrics.statusCodes[statusCategory] || 0) + 1;
+  // Track status codes
+  const statusCategory = `${Math.floor(entry.response.status / 100)}xx`;
+  metrics.httpMetrics.statusCodes[statusCategory] = 
+    (metrics.httpMetrics.statusCodes[statusCategory] || 0) + 1;
   
   // Track slow requests
   if (entry.time > 1000) {
@@ -143,6 +140,27 @@ function processHTTPEntry(entry, metrics) {
       time: entry.time,
       type: type
     });
+  }
+  
+  // Track large requests
+  if (size > 1000000) {
+    metrics.httpMetrics.largestRequests.push({
+      url: entry.request.url,
+      size: size,
+      type: type
+    });
+  }
+  
+  // Track cache
+  const cacheControl = entry.response.headers.find(h => 
+    h.name.toLowerCase() === 'cache-control'
+  );
+  if (cacheControl) {
+    if (cacheControl.value.includes('no-cache') || cacheControl.value.includes('no-store')) {
+      metrics.httpMetrics.cacheMisses++;
+    } else {
+      metrics.httpMetrics.cacheHits++;
+    }
   }
 }
 
