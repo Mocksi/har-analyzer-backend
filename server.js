@@ -12,6 +12,7 @@ const Redis = require('ioredis');
 const { Pool } = require('pg');
 const { v4: uuidv4 } = require('uuid');
 const analyzeHAR = require('./utils/harAnalyzer');
+const PERSONAS = require('./config/personas');
 
 // Near the top, after initial requires
 const pool = new Pool({
@@ -122,29 +123,26 @@ async function initializeServices() {
               ...metrics
             };
 
-            console.log(`Generating insights for job ${job.id}`);
-            const rawInsights = await generateInsights(sanitizedMetrics, job.data.persona);
-            const insights = parseAIResponse(rawInsights);
+            // Process each persona
+            for (const persona of Object.keys(PERSONAS)) {
+              console.log(`Generating insights for job ${job.id} and persona ${persona}`);
+              const rawInsights = await generateInsights(sanitizedMetrics, persona);
+              const insights = parseAIResponse(rawInsights);
 
-            await pool.query(
-              'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
-              [
-                job.id, 
-                job.data.persona, 
-                JSON.stringify(sanitizedMetrics), 
-                JSON.stringify(insights)
-              ]
-            );
+              await pool.query(
+                'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
+                [
+                  job.id, 
+                  persona, 
+                  JSON.stringify(sanitizedMetrics), 
+                  JSON.stringify(insights)
+                ]
+              );
+            }
 
-            console.log(`Job ${job.id} completed successfully`);
-            
-            // Mark job as completed with data
-            await job.updateProgress(100);
-            return { metrics: sanitizedMetrics, insights };
-
+            return { success: true };
           } catch (error) {
-            console.error(`Job ${job.id} failed with error:`, error);
-            await job.updateProgress(0);
+            console.error(`Error processing job ${job.id}:`, error);
             throw error;
           }
         }, { 
