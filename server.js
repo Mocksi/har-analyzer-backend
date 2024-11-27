@@ -315,33 +315,123 @@ async function generateInsights(extractedData, persona) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       const personaPrompts = {
-        Developer: `Analyze this HAR file data from a developer's perspective:
-        - Highlight performance bottlenecks and optimization opportunities
-        - Identify problematic API calls or slow requests
-        - Suggest specific code-level improvements
-        - Point out any security concerns or best practices violations`,
-        
-        'QA Professional': `Review this HAR file data from a QA perspective:
-        - Identify potential testing gaps and error patterns
-        - Analyze HTTP status code distribution
-        - Highlight reliability concerns
-        - Suggest test scenarios based on the traffic patterns`,
-        
-        'Sales Engineer': `Evaluate this HAR file data from a business perspective:
-        - Translate technical metrics into business impact
-        - Identify opportunities for improving user experience
-        - Compare performance against industry standards
-        - Highlight competitive advantages and areas for improvement`
+        developer: `Analyze this HAR file considering the developer perspective:
+
+- Performance metrics & bottlenecks:
+  • Analyze timing, size, and caching patterns
+  • Identify slow requests and resource bottlenecks
+  • Evaluate compression and optimization opportunities
+
+- Protocol usage & efficiency:
+  • Review HTTP/WebSocket patterns
+  • Assess connection reuse and multiplexing
+  • Evaluate header optimization
+
+- API behaviors & data flows:
+  • Analyze request/response patterns
+  • Identify redundant or inefficient calls
+  • Review data transfer efficiency
+
+- Security configurations:
+  • Check HTTPS usage and certificate validity
+  • Review security headers
+  • Identify potential vulnerabilities
+
+- Technical recommendations:
+  • Specific code-level improvements
+  • Caching strategy optimizations
+  • Performance enhancement priorities
+
+${extractedData.metrics?.websocket ? `
+Additional WebSocket Analysis:
+- Message patterns & frequency
+- Payload size optimization
+- Connection lifecycle management
+- Real-time behavior efficiency` : ''}
+
+Please provide specific, actionable insights based on the metrics provided.`,
+
+        'qa': `Analyze this HAR file considering the QA perspective:
+
+- Error patterns & status codes:
+  • Analyze status code distribution
+  • Identify error patterns and frequencies
+  • Review error handling effectiveness
+
+- Edge cases & failures:
+  • Identify potential failure scenarios
+  • Review timeout and retry patterns
+  • Assess error recovery mechanisms
+
+- Testing coverage:
+  • Highlight untested scenarios
+  • Identify missing error cases
+  • Suggest additional test coverage
+
+- Response validation:
+  • Review response consistency
+  • Check data integrity patterns
+  • Assess validation coverage
+
+- Reliability concerns:
+  • Analyze system stability indicators
+  • Review error recovery patterns
+  • Assess service dependencies
+
+${extractedData.metrics?.websocket ? `
+Additional WebSocket Analysis:
+- Connection stability patterns
+- Error handling in real-time
+- Recovery mechanism effectiveness
+- Testing scenario recommendations` : ''}
+
+Please provide specific testing recommendations based on the observed patterns.`,
+
+        'business': `Analyze this HAR file considering the business perspective:
+
+- User experience impact:
+  • Page load and interaction times
+  • Error rates and reliability
+  • Performance bottleneck costs
+
+- Industry standards comparison:
+  • Performance benchmarking
+  • Best practices alignment
+  • Competitive positioning
+
+- Resource utilization:
+  • Bandwidth consumption
+  • Server resource usage
+  • Infrastructure costs
+
+- Business implications:
+  • Revenue impact of performance
+  • Customer satisfaction factors
+  • Market positioning effects
+
+- ROI opportunities:
+  • Cost-saving recommendations
+  • Performance investment returns
+  • Priority improvement areas
+
+${extractedData.metrics?.websocket ? `
+Additional WebSocket Analysis:
+- Real-time capability assessment
+- Operational cost implications
+- Scaling considerations
+- User experience impact` : ''}
+
+Please provide business-focused insights and ROI-driven recommendations.`
       };
 
       const messages = [
         {
           role: 'system',
-          content: `You are an expert ${persona} analyzing web application performance data.`
+          content: `You are an expert ${persona} analyzing web application performance data. Provide clear, actionable insights with specific metrics and recommendations.`
         },
         {
           role: 'user',
-          content: `${personaPrompts[persona]}\n\nData:\n${JSON.stringify(extractedData, null, 2)}`
+          content: `${personaPrompts[persona.toLowerCase()]}\n\nMetrics:\n${JSON.stringify(extractedData, null, 2)}`
         }
       ];
 
@@ -357,12 +447,10 @@ async function generateInsights(extractedData, persona) {
       console.error(`OpenAI API attempt ${i + 1} failed:`, error.message);
       
       if (i < maxRetries - 1) {
-        // Wait longer between each retry
-        await delay((i + 1) * 2000); // 2s, 4s, 6s
+        await delay((i + 1) * 2000);
         continue;
       }
       
-      // On final attempt, throw the error
       if (error.code === 'insufficient_quota') {
         throw new Error('OpenAI API quota exceeded. Please try again later.');
       }
@@ -371,73 +459,188 @@ async function generateInsights(extractedData, persona) {
   }
 }
 
-function extractData(harContent) {
-  const entries = harContent.log.entries;
-  
-  // Aggregate metrics
+function analyzeHAR(harContent) {
   const metrics = {
-    totalRequests: entries.length,
-    totalTime: 0,
+    // General metrics
+    totalRequests: 0,
     totalSize: 0,
-    requestsByType: {},
-    statusCodes: {},
-    slowestRequests: [],
-    largestRequests: [],
+    totalTime: 0,
+    
+    // HTTP specific metrics
+    httpMetrics: {
+      requests: 0,
+      totalSize: 0,
+      totalTime: 0,
+      statusCodes: {},
+      requestsByType: {},
+      slowestRequests: [],
+      largestRequests: [],
+      cacheHits: 0,
+      cacheMisses: 0,
+      securityIssues: []
+    },
+    
+    // WebSocket specific metrics
+    websocketMetrics: {
+      connections: 0,
+      messageCount: 0,
+      sentMessages: 0,
+      receivedMessages: 0,
+      totalMessageSize: 0,
+      averageMessageSize: 0,
+      connectionDuration: 0,
+      messageTypes: {},
+      protocols: new Set(),
+      errors: []
+    },
+    
+    // Shared metrics
     domains: new Set(),
-    errors: []
+    timings: {
+      dns: 0,
+      connect: 0,
+      ssl: 0,
+      wait: 0,
+      receive: 0
+    }
   };
 
-  entries.forEach(entry => {
-    // Basic metrics
-    const size = entry.response.bodySize > 0 ? entry.response.bodySize : 0;
-    const time = entry.time;
-    const contentType = entry.response.content.mimeType.split(';')[0];
+  harContent.log.entries.forEach(entry => {
     const domain = new URL(entry.request.url).hostname;
-    
-    // Aggregate data
-    metrics.totalTime += time;
-    metrics.totalSize += size;
     metrics.domains.add(domain);
-    
-    // Track by content type
-    metrics.requestsByType[contentType] = (metrics.requestsByType[contentType] || 0) + 1;
-    
-    // Track status codes
-    metrics.statusCodes[entry.response.status] = 
-      (metrics.statusCodes[entry.response.status] || 0) + 1;
+    metrics.totalRequests++;
 
-    // Track slow requests (>500ms)
-    if (time > 500) {
-      metrics.slowestRequests.push({
-        url: entry.request.url,
-        time,
-        size
+    // Accumulate timing data if available
+    if (entry.timings) {
+      Object.keys(metrics.timings).forEach(timing => {
+        if (entry.timings[timing] && entry.timings[timing] > 0) {
+          metrics.timings[timing] += entry.timings[timing];
+        }
       });
     }
 
-    // Track large requests (>1MB)
-    if (size > 1000000) {
-      metrics.largestRequests.push({
-        url: entry.request.url,
-        size,
-        type: contentType
-      });
-    }
+    if (entry._resourceType === 'websocket') {
+      // WebSocket Analysis
+      const ws = metrics.websocketMetrics;
+      ws.connections++;
+      
+      if (entry._webSocketMessages) {
+        ws.messageCount += entry._webSocketMessages.length;
+        
+        entry._webSocketMessages.forEach(msg => {
+          // Message direction tracking
+          if (msg.type === 'send') ws.sentMessages++;
+          if (msg.type === 'receive') ws.receivedMessages++;
+          
+          // Message type analysis
+          try {
+            const data = typeof msg.data === 'string' ? JSON.parse(msg.data) : msg.data;
+            const msgType = data.cmd || data.type || 'unknown';
+            ws.messageTypes[msgType] = (ws.messageTypes[msgType] || 0) + 1;
+          } catch (e) {
+            ws.messageTypes.binary = (ws.messageTypes.binary || 0) + 1;
+          }
 
-    // Track errors (4xx and 5xx)
-    if (entry.response.status >= 400) {
-      metrics.errors.push({
-        url: entry.request.url,
-        status: entry.response.status,
-        statusText: entry.response.statusText
+          // Size tracking
+          if (msg.data) {
+            ws.totalMessageSize += msg.data.length;
+          }
+        });
+      }
+
+      // Connection duration
+      if (entry.time) {
+        ws.connectionDuration += entry.time;
+      }
+
+      // Protocol tracking
+      entry.request.headers.forEach(header => {
+        if (header.name.toLowerCase() === 'sec-websocket-protocol') {
+          header.value.split(',').forEach(protocol => {
+            ws.protocols.add(protocol.trim());
+          });
+        }
       });
+
+    } else {
+      // HTTP Request Analysis
+      const http = metrics.httpMetrics;
+      http.requests++;
+      
+      // Size calculations
+      const requestSize = entry.request.bodySize > 0 ? entry.request.bodySize : 0;
+      const responseSize = entry.response.bodySize > 0 ? entry.response.bodySize : 0;
+      const totalSize = requestSize + responseSize;
+      
+      http.totalSize += totalSize;
+      metrics.totalSize += totalSize;
+
+      // Timing
+      if (entry.time) {
+        http.totalTime += entry.time;
+        metrics.totalTime += entry.time;
+      }
+
+      // Status code distribution
+      const status = entry.response.status;
+      http.statusCodes[status] = (http.statusCodes[status] || 0) + 1;
+
+      // Resource types
+      const type = entry._resourceType || 'other';
+      http.requestsByType[type] = (http.requestsByType[type] || 0) + 1;
+
+      // Cache analysis
+      if (entry.response.headers.some(h => 
+        h.name.toLowerCase() === 'cf-cache-status' && h.value === 'HIT')) {
+        http.cacheHits++;
+      } else {
+        http.cacheMisses++;
+      }
+
+      // Track slow requests
+      if (entry.time > 1000) {
+        http.slowestRequests.push({
+          url: entry.request.url,
+          time: entry.time,
+          type: type,
+          size: totalSize,
+          status: status
+        });
+      }
+
+      // Track large requests
+      if (totalSize > 100000) {
+        http.largestRequests.push({
+          url: entry.request.url,
+          size: totalSize,
+          type: type,
+          time: entry.time,
+          status: status
+        });
+      }
+
+      // Security checks
+      if (!entry.request.url.startsWith('https://')) {
+        http.securityIssues.push({
+          type: 'insecure-protocol',
+          url: entry.request.url
+        });
+      }
     }
   });
 
-  // Sort and limit arrays
-  metrics.slowestRequests.sort((a, b) => b.time - a.time).slice(0, 5);
-  metrics.largestRequests.sort((a, b) => b.size - a.size).slice(0, 5);
+  // Post-processing
+  metrics.websocketMetrics.averageMessageSize = 
+    metrics.websocketMetrics.messageCount > 0 
+      ? metrics.websocketMetrics.totalMessageSize / metrics.websocketMetrics.messageCount 
+      : 0;
+
+  metrics.websocketMetrics.protocols = Array.from(metrics.websocketMetrics.protocols);
   metrics.domains = Array.from(metrics.domains);
+
+  // Sort arrays
+  metrics.httpMetrics.slowestRequests.sort((a, b) => b.time - a.time).slice(0, 5);
+  metrics.httpMetrics.largestRequests.sort((a, b) => b.size - a.size).slice(0, 5);
 
   return metrics;
 }
