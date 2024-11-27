@@ -13,6 +13,12 @@ const { Pool } = require('pg');
 const { v4: uuidv4 } = require('uuid');
 const analyzeHAR = require('./utils/harAnalyzer');
 
+// Near the top, after initial requires
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
 // Initialize Express App
 const app = express();
 const corsOrigins = process.env.CORS_ORIGINS?.split(',') || [
@@ -27,120 +33,170 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Define Redis connection options
-const redisOptions = {
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false
-};
-
-// Create Redis connection
-const connection = new Redis(process.env.REDIS_URL, redisOptions);
-
-// Wait for Redis connection before setting up Queue and Worker
-connection.on('error', (err) => {
-  console.error('Redis connection error:', err);
+// Add logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.url}`);
+  next();
 });
 
-connection.on('connect', async () => {
-  console.log('Redis connected');
-  
-  // Initialize Queue
-  const harQueue = new Queue('harQueue', { connection });
-
-  // Initialize Worker
-  const worker = new Worker(
-    'harQueue',
-    async job => {
-      console.log(`Processing job ${job.id}...`);
-      try {
-        const metrics = analyzeHAR(job.data.harContent);
-        
-        const structuredMetrics = {
-          ...metrics,
-          selected: metrics.selected || {},
-          primary: metrics.primary || {},
-          timeseries: metrics.timeseries || [],
-          requestsByType: metrics.requestsByType || {},
-          statusCodes: metrics.statusCodes || {},
-          domains: metrics.domains || []
-        };
-
-        let insights = null;
-        let error = null;
-
-        try {
-          insights = await generateInsights(structuredMetrics, job.data.persona);
-        } catch (aiError) {
-          console.error('AI Insights generation failed:', aiError);
-          error = aiError.message;
-        }
-
-        // Log before database insertion
-        console.log(`Inserting results for job ${job.id}...`);
-        
-        await pool.query(
-          'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3) ON CONFLICT (job_id) DO UPDATE SET insights = $3',
-          [job.id, job.data.persona, JSON.stringify({ 
-            metrics: structuredMetrics, 
-            insights,
-            error 
-          })]
-        );
-        
-        console.log(`Job ${job.id} completed successfully`);
-        return { jobId: job.id };
-      } catch (error) {
-        console.error(`Job ${job.id} failed:`, error);
-        throw error;
-      }
-    },
-    { connection }
-  );
-
-  worker.on('completed', job => {
-    console.log(`Job ${job.id} completed`);
-  });
-
-  worker.on('failed', (job, err) => {
-    console.error(`Job ${job.id} failed:`, err);
-  });
-
-  // Make harQueue available to routes
-  app.locals.harQueue = harQueue;
-});
-
-// Set up PostgreSQL Connection
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
-// Test Database Connection
-pool.connect((err) => {
-  if (err) {
-    console.error('Database connection error', err.stack);
-  } else {
+// Initialize services before starting server
+async function initializeServices() {
+  try {
+    // Test database connection
+    await pool.query('SELECT NOW()');
     console.log('Database connected');
+
+    // Create table if not exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS insights (
+        id SERIAL PRIMARY KEY,
+        job_id VARCHAR(255) UNIQUE NOT NULL,
+        persona VARCHAR(50) NOT NULL,
+        insights TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    console.log('Table "insights" is ready');
+
+    // Initialize Redis connection
+    const connection = new Redis(process.env.REDIS_URL, redisOptions);
+    
+    // Set up Queue and Worker after Redis connects
+    await new Promise((resolve, reject) => {
+      connection.on('error', (err) => {
+        console.error('Redis connection error:', err);
+        reject(err);
+      });
+
+      connection.on('connect', () => {
+        console.log('Redis connected');
+        
+        // Initialize Queue
+        const harQueue = new Queue('harQueue', { connection });
+        
+        // Initialize Worker
+        const worker = new Worker('harQueue', async job => {
+          console.log(`Processing job ${job.id}...`);
+          try {
+            const metrics = analyzeHAR(job.data.harContent);
+            const structuredMetrics = {
+              ...metrics,
+              selected: metrics.selected || {},
+              primary: metrics.primary || {},
+              timeseries: metrics.timeseries || [],
+              requestsByType: metrics.requestsByType || {},
+              statusCodes: metrics.statusCodes || {},
+              domains: metrics.domains || []
+            };
+
+            let insights = null;
+            let error = null;
+
+            try {
+              insights = await generateInsights(structuredMetrics, job.data.persona);
+            } catch (aiError) {
+              console.error('AI Insights generation failed:', aiError);
+              error = aiError.message;
+            }
+
+            // Log before database insertion
+            console.log(`Inserting results for job ${job.id}...`);
+            
+            await pool.query(
+              `INSERT INTO insights (job_id, persona, insights) 
+               VALUES ($1, $2, $3) 
+               ON CONFLICT (job_id) 
+               DO UPDATE SET insights = $3, persona = $2`,
+              [job.id, job.data.persona, JSON.stringify({ 
+                metrics: structuredMetrics, 
+                insights,
+                error 
+              })]
+            );
+            
+            console.log(`Job ${job.id} completed successfully`);
+            return { jobId: job.id };
+          } catch (error) {
+            console.error(`Job ${job.id} failed:`, error);
+            throw error;
+          }
+        }, { connection });
+
+        worker.on('completed', job => {
+          console.log(`Job ${job.id} completed`);
+        });
+
+        worker.on('failed', (job, err) => {
+          console.error(`Job ${job.id} failed:`, err);
+        });
+
+        // Make queue available to routes
+        app.locals.harQueue = harQueue;
+        resolve();
+      });
+    });
+
+    // Start server after all services are initialized
+    const PORT = process.env.PORT || 5000;
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+
+  } catch (error) {
+    console.error('Failed to initialize services:', error);
+    process.exit(1);
+  }
+}
+
+// Update the results endpoint with more logging
+app.get('/results/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { persona } = req.query;
+
+    console.log(`Fetching results for job ${jobId} with persona ${persona}`);
+
+    // First, check if the job is still in progress
+    const jobStatus = await harQueue.getJob(jobId);
+    if (jobStatus && !jobStatus.finishedOn) {
+      console.log(`Job ${jobId} is still processing`);
+      return res.status(202).json({ 
+        status: 'processing',
+        message: 'Analysis in progress'
+      });
+    }
+
+    // Then check the database for results
+    const result = await pool.query(
+      'SELECT insights FROM insights WHERE job_id = $1',
+      [jobId]
+    );
+
+    if (result.rows.length === 0) {
+      console.log(`No results found for job ${jobId}`);
+      return res.status(404).json({ 
+        error: 'Results not found',
+        message: 'Results not found or have expired'
+      });
+    }
+
+    console.log(`Found results for job ${jobId}`);
+    const insights = JSON.parse(result.rows[0].insights);
+    res.json(insights);
+  } catch (error) {
+    console.error('Error fetching results:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch results',
+      message: error.message 
+    });
   }
 });
 
-// Initialize Database Tables
-pool.query(
-  `CREATE TABLE IF NOT EXISTS insights (
-    id SERIAL PRIMARY KEY,
-    job_id VARCHAR(255) UNIQUE NOT NULL,
-    persona VARCHAR(50) NOT NULL,
-    insights TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )`,
-  (err) => {
-    if (err) {
-      console.error('Error creating table', err.stack);
-    } else {
-      console.log('Table "insights" is ready');
-    }
-  }
-);
+// Start the initialization process
+initializeServices().catch(error => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
+});
 
 // Set up OpenAI Configuration
 const openai = new OpenAI({
@@ -206,38 +262,6 @@ app.post('/analyze', upload.single('harFile'), async (req, res) => {
   }
 });
 
-app.get('/results/:jobId', async (req, res) => {
-  try {
-    const { jobId } = req.params;
-    const { persona } = req.query;
-
-    console.log(`Fetching results for job ${jobId} with persona ${persona}`);
-
-    const result = await pool.query(
-      'SELECT insights FROM insights WHERE job_id = $1 AND persona = $2',
-      [jobId, persona]
-    );
-
-    if (result.rows.length === 0) {
-      console.log(`No results found for job ${jobId}`);
-      return res.status(404).json({ 
-        error: 'Results not found',
-        message: 'Analysis in progress or results have expired. Please try again in a few moments.'
-      });
-    }
-
-    console.log(`Found results for job ${jobId}`);
-    const insights = result.rows[0].insights;
-    res.json(insights);
-  } catch (error) {
-    console.error('Error fetching results:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch results',
-      message: error.message 
-    });
-  }
-});
-
 // Temporary test endpoint
 app.get('/test-openai', async (req, res) => {
   try {
@@ -255,12 +279,6 @@ app.get('/test-openai', async (req, res) => {
       type: error.type
     });
   }
-});
-
-// Start Server
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Backend server running on port ${PORT}`);
 });
 
 // Functions (move these before the worker setup)
