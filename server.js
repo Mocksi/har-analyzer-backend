@@ -77,7 +77,6 @@ const openai = new OpenAI({
 
 // Initialize Queue
 const harQueue = new Queue('harQueue', { 
-  connection: redisOptions,
   connection: new Redis(process.env.REDIS_URL, redisOptions)
 });
 
@@ -189,7 +188,7 @@ const worker = new Worker('harQueue', async job => {
       [job.id, job.data.persona, JSON.stringify({ 
         metrics, 
         insights,
-        error // Include error message if AI failed
+        error 
       })]
     );
     
