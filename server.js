@@ -15,11 +15,20 @@ app.use(cors({
 
 app.use(express.json({ limit: '100mb' }));
 
+// Add logging middleware
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.path}`, req.body ? 'with payload' : '');
+  next();
+});
+
 // Restore the analyze endpoint
 app.post('/analyze', async (req, res) => {
+  console.log('Analyze endpoint hit');
   try {
     const harContent = req.body;
+    console.log('Received HAR content, size:', JSON.stringify(harContent).length);
     const metrics = analyzeHAR(harContent);
+    console.log('Analysis complete');
     
     res.json({ 
       jobId: Date.now().toString(),
