@@ -103,7 +103,10 @@ async function initializeServices() {
             
             const sanitizedMetrics = {
               domains: metrics.domains || [],
-              timeseries: metrics.timeseries || [],
+              timeseries: metrics.timeseries?.map(point => ({
+                timestamp: point.timestamp,
+                responseTime: point.responseTime || 0
+              })) || [],
               requestsByType: metrics.requestsByType || {},
               primary: metrics.primary || {
                 errorRate: 0,
@@ -207,18 +210,26 @@ app.get('/results/:jobId', async (req, res) => {
       });
     }
 
-    const metrics = result.rows[0].har_metrics;
-    const insights = result.rows[0].har_insights;
+    let metrics = result.rows[0].har_metrics;
+    let insights = result.rows[0].har_insights;
 
-    // Validate response data
-    if (!metrics || !insights) {
-      console.error(`Invalid data for job ${jobId}:`, { metrics, insights });
-      return res.status(500).json({ 
-        error: 'Invalid data structure',
-        jobId,
-        persona
-      });
+    // Parse if stored as strings
+    if (typeof metrics === 'string') {
+      metrics = JSON.parse(metrics);
     }
+    if (typeof insights === 'string') {
+      insights = JSON.parse(insights);
+    }
+
+    // Ensure timeseries is properly structured
+    metrics.timeseries = Array.isArray(metrics.timeseries) 
+      ? metrics.timeseries.map(point => ({
+          timestamp: point.timestamp,
+          responseTime: point.responseTime || 0
+        }))
+      : [];
+
+    console.log('Sending metrics with timeseries:', metrics.timeseries); // Debug log
 
     return res.json({ metrics, insights });
 
