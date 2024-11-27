@@ -5,7 +5,7 @@ const Redis = require('ioredis');
 const analyzeHAR = require('./utils/harAnalyzer');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 10000;
 
 // Middleware setup
 app.use(cors({
@@ -35,11 +35,12 @@ app.post('/analyze', async (req, res) => {
 app.get('/results/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
-    const { persona } = req.query;
     
-    // Since we're not using a queue anymore, just return the error
-    res.status(404).json({ 
-      error: 'Results not found. Please try uploading the file again.' 
+    // Since we're doing synchronous analysis now, just return the metrics
+    // that were generated in the /analyze endpoint
+    res.json({
+      metrics: res.locals.metrics || {},
+      status: 'completed'
     });
   } catch (error) {
     console.error('Error fetching results:', error);
