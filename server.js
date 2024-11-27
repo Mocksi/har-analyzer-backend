@@ -21,6 +21,9 @@ app.use((req, res, next) => {
   next();
 });
 
+// Add a simple in-memory store for metrics
+const metricsStore = new Map();
+
 // Restore the analyze endpoint
 app.post('/analyze', async (req, res) => {
   console.log('Analyze endpoint hit');
@@ -30,8 +33,12 @@ app.post('/analyze', async (req, res) => {
     const metrics = analyzeHAR(harContent);
     console.log('Analysis complete');
     
+    const jobId = Date.now().toString();
+    // Store the metrics with the jobId
+    metricsStore.set(jobId, metrics);
+    
     res.json({ 
-      jobId: Date.now().toString(),
+      jobId,
       metrics 
     });
   } catch (error) {
@@ -40,15 +47,18 @@ app.post('/analyze', async (req, res) => {
   }
 });
 
-// Add results endpoint
+// Update results endpoint to use stored metrics
 app.get('/results/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
+    const metrics = metricsStore.get(jobId);
     
-    // Since we're doing synchronous analysis now, just return the metrics
-    // that were generated in the /analyze endpoint
+    if (!metrics) {
+      return res.status(404).json({ error: 'Results not found' });
+    }
+    
     res.json({
-      metrics: res.locals.metrics || {},
+      metrics,
       status: 'completed'
     });
   } catch (error) {
