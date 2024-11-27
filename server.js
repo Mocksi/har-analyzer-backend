@@ -11,7 +11,7 @@ const { Worker, Queue } = require('bullmq');
 const Redis = require('ioredis');
 const { Pool } = require('pg');
 const { v4: uuidv4 } = require('uuid');
-const HARAnalyzer = require('./utils/harAnalyzer');
+const analyzeHAR = require('./utils/harAnalyzer');
 const { cleanupExpiredInsights } = require('./utils/cleanup');
 
 // Initialize Express App
@@ -170,40 +170,45 @@ app.listen(PORT, () => {
 });
 
 // Worker to Process HAR Files
-const harWorker = new Worker(
-  'harQueue',
-  async (job) => {
-    const { harContent, persona } = job.data;
-    
-    const analyzer = new HARAnalyzer(harContent);
-    const analysis = analyzer.analyze();
-    
-    // Generate persona-specific insights using OpenAI
-    const insights = await generatePersonaInsights(analysis, persona);
-    
-    // Store in database with more detailed information
-    await pool.query(
-      `INSERT INTO insights (
-        job_id, 
-        persona, 
-        insights, 
-        metrics, 
-        raw_analysis,
-        created_at
-      ) VALUES ($1, $2, $3, $4, $5, NOW())`,
-      [
-        job.id,
-        persona,
-        insights,
-        JSON.stringify(analysis.metrics),
-        JSON.stringify(analysis)
-      ]
-    );
+const worker = new Worker('harQueue', async job => {
+  try {
+    const metrics = analyzeHAR(job.data.harContent);
+    let insights = null;
+    let error = null;
 
+    try {
+      insights = await generateInsights(metrics, job.data.persona);
+    } catch (aiError) {
+      console.error('AI Insights generation failed:', aiError);
+      error = aiError.message;
+    }
+
+    // Store results even if AI insights failed
+    await pool.query(
+      'INSERT INTO insights (job_id, persona, insights) VALUES ($1, $2, $3)',
+      [job.id, job.data.persona, JSON.stringify({ 
+        metrics, 
+        insights,
+        error // Include error message if AI failed
+      })]
+    );
+    
     return { jobId: job.id };
-  },
-  { connection: new Redis(process.env.REDIS_URL, redisOptions) }
-);
+  } catch (error) {
+    console.error('Analysis failed:', error);
+    throw error;
+  }
+}, {
+  connection: new Redis(process.env.REDIS_URL, redisOptions)
+});
+
+worker.on('failed', (job, err) => {
+  console.error(`Job ${job.id} failed:`, err);
+});
+
+worker.on('completed', (job) => {
+  console.log(`Job ${job.id} completed`);
+});
 
 // Functions
 function extractData(harContent) {
@@ -278,50 +283,66 @@ function extractData(harContent) {
 }
 
 async function generateInsights(extractedData, persona) {
-  const personaPrompts = {
-    Developer: `Analyze this HAR file data from a developer's perspective:
-    - Highlight performance bottlenecks and optimization opportunities
-    - Identify problematic API calls or slow requests
-    - Suggest specific code-level improvements
-    - Point out any security concerns or best practices violations`,
-    
-    'QA Professional': `Review this HAR file data from a QA perspective:
-    - Identify potential testing gaps and error patterns
-    - Analyze HTTP status code distribution
-    - Highlight reliability concerns
-    - Suggest test scenarios based on the traffic patterns`,
-    
-    'Sales Engineer': `Evaluate this HAR file data from a business perspective:
-    - Translate technical metrics into business impact
-    - Identify opportunities for improving user experience
-    - Compare performance against industry standards
-    - Highlight competitive advantages and areas for improvement`
-  };
+  try {
+    const personaPrompts = {
+      Developer: `Analyze this HAR file data from a developer's perspective:
+      - Highlight performance bottlenecks and optimization opportunities
+      - Identify problematic API calls or slow requests
+      - Suggest specific code-level improvements
+      - Point out any security concerns or best practices violations`,
+      
+      'QA Professional': `Review this HAR file data from a QA perspective:
+      - Identify potential testing gaps and error patterns
+      - Analyze HTTP status code distribution
+      - Highlight reliability concerns
+      - Suggest test scenarios based on the traffic patterns`,
+      
+      'Sales Engineer': `Evaluate this HAR file data from a business perspective:
+      - Translate technical metrics into business impact
+      - Identify opportunities for improving user experience
+      - Compare performance against industry standards
+      - Highlight competitive advantages and areas for improvement`
+    };
 
-  const messages = [
-    {
-      role: 'system',
-      content: `You are an expert ${persona} analyzing web application performance data. 
-                Provide detailed, actionable insights in a structured format with sections for:
-                1. Key Findings
-                2. Detailed Analysis
-                3. Recommendations
-                4. Technical Details`
-    },
-    {
-      role: 'user',
-      content: `${personaPrompts[persona]}\n\nData:\n${JSON.stringify(extractedData, null, 2)}`
+    const messages = [
+      {
+        role: 'system',
+        content: `You are an expert ${persona} analyzing web application performance data.`
+      },
+      {
+        role: 'user',
+        content: `${personaPrompts[persona]}\n\nData:\n${JSON.stringify(extractedData, null, 2)}`
+      }
+    ];
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages,
+      temperature: 0.7,
+      max_tokens: 1500
+    });
+
+    return response.choices[0].message.content.trim();
+  } catch (error) {
+    console.error('OpenAI API error:', error);
+    
+    // Check for specific OpenAI errors
+    if (error.code === 'insufficient_quota') {
+      throw new Error('OpenAI API quota exceeded. Please try again later.');
     }
-  ];
+    
+    if (error.status === 429) {
+      throw new Error('Rate limit exceeded. Please try again in a few minutes.');
+    }
+    
+    // Generic OpenAI error
+    if (error.response?.status >= 400) {
+      throw new Error('AI analysis temporarily unavailable. Basic metrics are still available.');
+    }
 
-  const response = await openai.chat.completions.create({
-    model: 'gpt-3.5-turbo',
-    messages,
-    temperature: 0.7,
-    max_tokens: 1500
-  });
-
-  return response.choices[0].message.content.trim();
+    // Fallback error
+    throw new Error('Failed to generate AI insights. Basic metrics are still available.');
+  }
 }
 
 // Start cleanup process
@@ -334,13 +355,4 @@ connection.on('error', (err) => {
 
 connection.on('connect', () => {
   console.log('Redis connected');
-});
-
-// Update BullMQ worker with error handling
-harWorker.on('failed', (job, err) => {
-  console.error(`Job ${job.id} failed:`, err);
-});
-
-harWorker.on('completed', (job) => {
-  console.log(`Job ${job.id} completed`);
 });
