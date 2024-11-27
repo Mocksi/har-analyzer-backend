@@ -29,42 +29,41 @@ app.post('/analyze', async (req, res) => {
   console.log('Analyze endpoint hit');
   try {
     const harContent = req.body;
-    console.log('Received HAR content, size:', JSON.stringify(harContent).length);
+    console.log(`Received HAR content, size: ${JSON.stringify(harContent).length}`);
+    
+    // Perform analysis
     const metrics = analyzeHAR(harContent);
-    console.log('Analysis complete');
+    const jobId = Date.now();
     
-    const jobId = Date.now().toString();
-    // Store the metrics with the jobId
-    metricsStore.set(jobId, metrics);
-    
-    res.json({ 
-      jobId,
-      metrics 
+    // Store results with proper structure
+    metricsStore.set(jobId, {
+      metrics,
+      insights: await generateInsights(metrics), // Make sure this function exists
+      siteInfo: {
+        domainName: extractDomain(harContent),
+        timestamp: new Date().toISOString(),
+        reportId: `HAR-${jobId}-${formatDate(new Date())}`
+      }
     });
+
+    console.log('Analysis complete');
+    res.json({ jobId });
   } catch (error) {
-    console.error('Error analyzing HAR:', error);
-    res.status(500).json({ error: 'Failed to analyze HAR file' });
+    console.error('Analysis failed:', error);
+    res.status(500).json({ error: 'Analysis failed' });
   }
 });
 
 // Update results endpoint to use stored metrics
-app.get('/results/:jobId', async (req, res) => {
-  try {
-    const { jobId } = req.params;
-    const metrics = metricsStore.get(jobId);
-    
-    if (!metrics) {
-      return res.status(404).json({ error: 'Results not found' });
-    }
-    
-    res.json({
-      metrics,
-      status: 'completed'
-    });
-  } catch (error) {
-    console.error('Error fetching results:', error);
-    res.status(500).json({ error: 'Failed to fetch results' });
+app.get('/results/:jobId', (req, res) => {
+  const { jobId } = req.params;
+  const results = metricsStore.get(parseInt(jobId));
+  
+  if (!results) {
+    return res.status(404).json({ error: 'Results not found' });
   }
+
+  res.json(results);
 });
 
 function parseAIResponse(aiResponse) {
