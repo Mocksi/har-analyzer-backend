@@ -1,3 +1,19 @@
+const express = require('express');
+const cors = require('cors');
+const { Worker } = require('bullmq');
+const Redis = require('ioredis');
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+// Middleware setup
+app.use(cors({
+  origin: process.env.CORS_ORIGINS?.split(',') || 'http://localhost:3000',
+  credentials: true
+}));
+
+app.use(express.json());
+
 function parseAIResponse(aiResponse) {
   try {
     const sections = typeof aiResponse === 'string' 
@@ -20,3 +36,7 @@ function parseAIResponse(aiResponse) {
     }];
   }
 }
+
+app.listen(port, '0.0.0.0', () => {
+  console.log(`HAR Analyzer backend listening on port ${port}`);
+});
