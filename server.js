@@ -78,10 +78,8 @@ const openai = new OpenAI({
 console.log('OpenAI API Key exists:', !!process.env.OPENAI_API_KEY);
 console.log('OpenAI API Key length:', process.env.OPENAI_API_KEY?.length);
 
-// Initialize Queue
-const harQueue = new Queue('harQueue', { 
-  connection: new Redis(process.env.REDIS_URL, redisOptions)
-});
+// Initialize Queue with the connection
+const harQueue = new Queue('harQueue', { connection });
 
 // Set up Storage for Multer
 const storage = multer.memoryStorage();
@@ -397,7 +395,6 @@ const worker = new Worker('harQueue', async job => {
     throw error;
   }
 });
-
 worker.on('failed', (job, err) => {
   console.error(`Job ${job.id} failed:`, err);
 });
