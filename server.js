@@ -67,10 +67,12 @@ async function initializeServices() {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS insights (
         id SERIAL PRIMARY KEY,
-        job_id VARCHAR(255) UNIQUE NOT NULL,
+        job_id VARCHAR(255) NOT NULL,
         persona VARCHAR(50) NOT NULL,
-        insights TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        metrics JSONB,
+        insights JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(job_id, persona)
       )
     `);
     console.log('Table "insights" is ready');
@@ -97,44 +99,15 @@ async function initializeServices() {
           console.log(`Processing job ${job.id}...`);
           try {
             const metrics = analyzeHAR(job.data.harContent);
-            const structuredMetrics = {
-              ...metrics,
-              selected: metrics.selected || {},
-              primary: metrics.primary || {},
-              timeseries: metrics.timeseries || [],
-              requestsByType: metrics.requestsByType || {},
-              statusCodes: metrics.statusCodes || {},
-              domains: metrics.domains || []
-            };
-
-            let insights = [];
-            let error = null;
-
-            try {
-              const aiResponse = await generateInsights(structuredMetrics, job.data.persona);
-              // Parse AI response into structured insights
-              insights = parseAIResponse(aiResponse);
-            } catch (aiError) {
-              console.error('AI Insights generation failed:', aiError);
-              error = aiError.message;
-            }
-
-            console.log(`Inserting results for job ${job.id}...`);
+            const initialInsights = await generateInsights(metrics, job.data.persona);
             
             await pool.query(
-              `INSERT INTO insights (job_id, persona, insights) 
-               VALUES ($1, $2, $3) 
-               ON CONFLICT (job_id) 
-               DO UPDATE SET insights = $3, persona = $2`,
-              [job.id, job.data.persona, JSON.stringify({ 
-                metrics: structuredMetrics, 
-                insights: insights || [], // Ensure insights is always an array
-                error 
-              })]
+              'INSERT INTO insights (job_id, persona, metrics, insights) VALUES ($1, $2, $3, $4)',
+              [job.id, job.data.persona, JSON.stringify(metrics), JSON.stringify(initialInsights)]
             );
-            
+
             console.log(`Job ${job.id} completed successfully`);
-            return { jobId: job.id };
+            return { metrics, insights: initialInsights };
           } catch (error) {
             console.error(`Job ${job.id} failed:`, error);
             throw error;
@@ -173,48 +146,56 @@ app.get('/results/:jobId', async (req, res) => {
 
     console.log(`Fetching results for job ${jobId} with persona ${persona}`);
 
-    // First, check if the job is still in progress
+    // Check if job is still processing
     if (!app.locals.harQueue) {
       console.error('Queue not initialized');
-      return res.status(500).json({ 
-        error: 'Service not ready',
-        message: 'Queue not initialized'
-      });
+      return res.status(500).json({ error: 'Service not ready' });
     }
 
     const jobStatus = await app.locals.harQueue.getJob(jobId);
     if (jobStatus && !jobStatus.finishedOn) {
-      console.log(`Job ${jobId} is still processing`);
-      return res.status(202).json({ 
-        status: 'processing',
-        message: 'Analysis in progress'
-      });
+      return res.status(202).json({ status: 'processing' });
     }
 
-    // Then check the database for results
+    // Get results for the specific persona
     const result = await pool.query(
-      'SELECT insights FROM insights WHERE job_id = $1',
-      [jobId]
+      'SELECT metrics, insights FROM insights WHERE job_id = $1 AND persona = $2',
+      [jobId, persona]
     );
 
     if (result.rows.length === 0) {
-      console.log(`No results found for job ${jobId}`);
-      return res.status(404).json({ 
-        error: 'Results not found',
-        message: 'Results not found or have expired'
-      });
+      // Get metrics from original analysis
+      const baseResult = await pool.query(
+        'SELECT metrics FROM insights WHERE job_id = $1 LIMIT 1',
+        [jobId]
+      );
+      
+      if (baseResult.rows.length === 0) {
+        return res.status(404).json({ error: 'Results not found' });
+      }
+
+      // Generate new insights for this persona
+      const metrics = JSON.parse(baseResult.rows[0].metrics);
+      const newInsights = await generateInsights(metrics, persona);
+
+      // Store new persona-specific insights
+      await pool.query(
+        'INSERT INTO insights (job_id, persona, metrics, insights) VALUES ($1, $2, $3, $4)',
+        [jobId, persona, JSON.stringify(metrics), JSON.stringify(newInsights)]
+      );
+
+      return res.json({ metrics, insights: newInsights });
     }
 
-    console.log(`Found results for job ${jobId}`);
-    const insights = JSON.parse(result.rows[0].insights);
-    res.json(insights);
+    // Return existing results
+    return res.json({
+      metrics: JSON.parse(result.rows[0].metrics),
+      insights: JSON.parse(result.rows[0].insights)
+    });
+
   } catch (error) {
     console.error('Error fetching results:', error);
-    res.status(500).json({ 
-      error: 'Failed to fetch results',
-      message: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    res.status(500).json({ error: 'Failed to fetch results' });
   }
 });
 
@@ -480,23 +461,79 @@ setInterval(cleanupExpiredInsights, 24 * 60 * 60 * 1000);
 // Helper function to parse AI response into structured insights
 function parseAIResponse(aiResponse) {
   try {
-    // If the response is already an array of insights, return it
+    // If already structured, return as is
     if (Array.isArray(aiResponse)) {
       return aiResponse;
     }
+
+    // Split the response into sections based on numbered points
+    const sections = aiResponse.split(/\d+\.\s+/).filter(Boolean);
     
-    // Otherwise, create a single insight
-    return [{
-      severity: 'info',
-      message: aiResponse,
-      timestamp: new Date().toISOString()
-    }];
+    return sections.map(section => {
+      // Extract the section title and content
+      const [title, ...contentParts] = section.split(':');
+      const content = contentParts.join(':').trim();
+
+      // Split content into bullet points
+      const bulletPoints = content
+        .split(/[-•]\s+/)
+        .filter(Boolean)
+        .map(point => point.trim());
+
+      // Create structured insight
+      return {
+        category: title.trim(),
+        severity: determineSeverity(content),
+        message: title.trim(),
+        details: bulletPoints,
+        recommendations: bulletPoints.filter(point => 
+          point.toLowerCase().includes('consider') || 
+          point.toLowerCase().includes('implement') ||
+          point.toLowerCase().includes('optimize') ||
+          point.toLowerCase().includes('review')
+        ),
+        timestamp: new Date().toISOString()
+      };
+    });
   } catch (error) {
     console.error('Failed to parse AI response:', error);
     return [{
+      category: 'error',
       severity: 'error',
-      message: 'Failed to parse AI insights',
+      message: 'Failed to parse insights',
+      details: [aiResponse],
+      recommendations: [],
       timestamp: new Date().toISOString()
     }];
   }
+}
+
+function determineSeverity(content) {
+  const lowercaseContent = content.toLowerCase();
+  
+  if (
+    lowercaseContent.includes('critical') || 
+    lowercaseContent.includes('severe') ||
+    lowercaseContent.includes('high impact')
+  ) {
+    return 'critical';
+  }
+  
+  if (
+    lowercaseContent.includes('warning') || 
+    lowercaseContent.includes('consider') ||
+    lowercaseContent.includes('improve')
+  ) {
+    return 'warning';
+  }
+  
+  if (
+    lowercaseContent.includes('optimization') || 
+    lowercaseContent.includes('enhance') ||
+    lowercaseContent.includes('recommend')
+  ) {
+    return 'info';
+  }
+  
+  return 'info';
 }
