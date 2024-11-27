@@ -221,11 +221,11 @@ app.get('/results/:jobId', async (req, res) => {
       insights = JSON.parse(insights);
     }
 
-    // Ensure timeseries is properly structured
+    // Transform timeseries data to match frontend expectations
     metrics.timeseries = Array.isArray(metrics.timeseries) 
       ? metrics.timeseries.map(point => ({
           timestamp: point.timestamp,
-          responseTime: point.responseTime || 0
+          value: point.responseTime || 0  // Change responseTime to value
         }))
       : [];
 
