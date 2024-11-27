@@ -98,37 +98,69 @@ async function initializeServices() {
         const worker = new Worker('harQueue', async job => {
           console.log(`Processing job ${job.id}...`);
           try {
+            // Add logging for each step
+            console.log(`Analyzing HAR for job ${job.id}`);
             const metrics = analyzeHAR(job.data.harContent);
+            console.log(`Metrics generated for job ${job.id}:`, JSON.stringify(metrics).slice(0, 200) + '...');
+
+            console.log(`Generating insights for job ${job.id}`);
             const rawInsights = await generateInsights(metrics, job.data.persona);
-            
-            // Parse the insights into structured format
+            console.log(`Raw insights generated for job ${job.id}:`, rawInsights.slice(0, 200) + '...');
+
+            console.log(`Parsing insights for job ${job.id}`);
             const insights = parseAIResponse(rawInsights);
-            
-            // Store both as JSONB
+            console.log(`Structured insights created for job ${job.id}`);
+
+            console.log(`Storing results for job ${job.id}`);
             await pool.query(
               'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
               [
                 job.id, 
                 job.data.persona, 
                 JSON.stringify(metrics), 
-                JSON.stringify(insights)  // Make sure insights is an object/array before storing
+                JSON.stringify(insights)
               ]
             );
 
             console.log(`Job ${job.id} completed successfully`);
             return { metrics, insights };
           } catch (error) {
-            console.error(`Job ${job.id} failed:`, error);
+            console.error(`Job ${job.id} failed with error:`, error);
+            console.error('Error stack:', error.stack);
+            
+            // Store error state in database
+            try {
+              await pool.query(
+                'INSERT INTO insights (job_id, persona, har_metrics, har_insights) VALUES ($1, $2, $3, $4)',
+                [
+                  job.id,
+                  job.data.persona,
+                  JSON.stringify({ error: 'Processing failed' }),
+                  JSON.stringify([{
+                    category: 'error',
+                    severity: 'error',
+                    message: 'Analysis failed',
+                    details: [error.message],
+                    recommendations: ['Try analyzing the file again'],
+                    timestamp: new Date().toISOString()
+                  }])
+                ]
+              );
+            } catch (dbError) {
+              console.error('Failed to store error state:', dbError);
+            }
+            
             throw error;
           }
         }, { connection });
 
-        worker.on('completed', job => {
-          console.log(`Job ${job.id} completed`);
+        // Add error handler to worker
+        worker.on('error', error => {
+          console.error('Worker error:', error);
         });
 
-        worker.on('failed', (job, err) => {
-          console.error(`Job ${job.id} failed:`, err);
+        worker.on('failed', (job, error) => {
+          console.error(`Job ${job.id} failed:`, error);
         });
 
         resolve();
@@ -155,27 +187,40 @@ app.get('/results/:jobId', async (req, res) => {
 
     console.log(`Fetching results for job ${jobId} with persona ${persona}`);
 
+    // Check job status
+    const jobStatus = await app.locals.harQueue.getJob(jobId);
+    console.log(`Job ${jobId} status:`, jobStatus ? jobStatus.status : 'not found');
+    
+    if (jobStatus && !jobStatus.finishedOn) {
+      console.log(`Job ${jobId} is still processing`);
+      return res.status(202).json({ status: 'processing' });
+    }
+
     const result = await pool.query(
       'SELECT har_metrics, har_insights FROM insights WHERE job_id = $1 AND persona = $2',
       [jobId, persona]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Results not found' });
+      console.log(`No results found for job ${jobId}`);
+      return res.status(404).json({ 
+        error: 'Results not found',
+        jobId,
+        persona 
+      });
     }
 
     const metrics = result.rows[0].har_metrics;
-    let insights = result.rows[0].har_insights;
+    const insights = result.rows[0].har_insights;
 
-    // Handle case where insights might be stored as a string
-    if (typeof insights === 'string') {
-      insights = parseAIResponse(insights);
-      
-      // Update the stored format
-      await pool.query(
-        'UPDATE insights SET har_insights = $1 WHERE job_id = $2 AND persona = $3',
-        [JSON.stringify(insights), jobId, persona]
-      );
+    // Validate response data
+    if (!metrics || !insights) {
+      console.error(`Invalid data for job ${jobId}:`, { metrics, insights });
+      return res.status(500).json({ 
+        error: 'Invalid data structure',
+        jobId,
+        persona
+      });
     }
 
     return res.json({ metrics, insights });
@@ -184,7 +229,8 @@ app.get('/results/:jobId', async (req, res) => {
     console.error('Error fetching results:', error);
     res.status(500).json({ 
       error: 'Failed to fetch results',
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
