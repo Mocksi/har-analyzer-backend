@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { Worker } = require('bullmq');
 const Redis = require('ioredis');
+const analyzeHAR = require('./utils/harAnalyzer');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -13,6 +14,22 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// Restore the analyze endpoint
+app.post('/analyze', async (req, res) => {
+  try {
+    const harContent = req.body;
+    const metrics = analyzeHAR(harContent);
+    
+    res.json({ 
+      jobId: Date.now().toString(),
+      metrics 
+    });
+  } catch (error) {
+    console.error('Error analyzing HAR:', error);
+    res.status(500).json({ error: 'Failed to analyze HAR file' });
+  }
+});
 
 function parseAIResponse(aiResponse) {
   try {
